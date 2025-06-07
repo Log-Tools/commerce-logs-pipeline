@@ -1,0 +1,19 @@
+subscriptions:
+  cp2:
+    name: "SAP Commerce Cloud Subscription"
+    environments:
+      P1:
+        name: "Production Environment 1"
+        storage_account:
+          account_name: "your_storage_account_here"
+          access_key: "your_access_key_here"
+      D1:
+        name: "Development Environment 1"
+        storage_account:
+          account_name: "your_storage_account_here"
+          access_key: "your_access_key_here"
+      S1:
+        name: "Staging Environment 1"
+        storage_account:
+          account_name: "your_storage_account_here"
+          access_key: "your_access_key_here" 
