@@ -1,0 +1,31 @@
+# Commerce Logs Pipeline - Application Services
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.app.yml up
+
+services:
+  # Ingestion Pipeline Container
+  ingestion-pipeline:
+    build:
+      context: .
+      dockerfile: pipeline/ingest/Dockerfile
+    container_name: ingestion-pipeline
+    volumes:
+      # Mount config directory for credentials
+      - ~/.commerce-logs-pipeline:/root/.commerce-logs-pipeline:ro
+    environment:
+      # Default environment variables (override as needed)
+      KAFKA_BROKERS: kafka:29092
+      SUBSCRIPTION_ID: ${SUBSCRIPTION_ID:-cp2}
+      ENVIRONMENT: ${ENVIRONMENT:-P1}
+      AZURE_STORAGE_CONTAINER_NAME: ${AZURE_STORAGE_CONTAINER_NAME:-commerce-logs-separated}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-commerce-logs}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    profiles:
+      - ingestion
+    networks:
+      - default
+
+networks:
+  default:
+    name: commerce-logs-network 
