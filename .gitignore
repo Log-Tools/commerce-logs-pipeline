@@ -1,0 +1,94 @@
+# Go binaries and build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/pipeline/*/main
+/pipeline/*/log-ingestion
+/pipeline/*/log-processor
+/pipeline/*/log-exporter
+
+# Go test binary, built with `go test -c`
+*.test
+
+# Go output of `go test -race`
+*.out
+
+# Go dependency vendoring (not needed with modules)
+vendor/
+
+# Go workspace files
+go.work.sum
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.env
+venv/
+env/
+ENV/
+
+# PyTest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Configuration files with credentials
+config.yaml
+*.key
+*.pem
+*.crt
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Editor backup files
+*.bak
+*.backup
+
+# Application specific
+workdir/ 
