@@ -1,10 +1,19 @@
-# Commerce Logs Pipeline - Docker Operations
-.PHONY: help dev-up dev-down build test clean
+# Commerce Logs Pipeline - Docker Operations & Go Builds
+.PHONY: help dev-up dev-down build test clean build-go clean-go test-go install-go
+
+# Go modules
+MODULES := pipeline/blob-monitor pipeline/ingest
 
 # Default target
 help:
-	@echo "Commerce Logs Pipeline - Docker Commands"
-	@echo "========================================"
+	@echo "Commerce Logs Pipeline - Commands"
+	@echo "================================="
+	@echo "Go Development:"
+	@echo "  make build-go        Build all Go modules to bin/ directories"
+	@echo "  make clean-go        Clean all Go module binaries"
+	@echo "  make test-go         Run tests for all Go modules"
+	@echo "  make install-go      Install all Go modules to GOPATH/bin"
+	@echo ""
 	@echo "Development (recommended):"
 	@echo "  make dev-up          Start Kafka & Kafdrop for local development"
 	@echo "  make dev-down        Stop development services"
@@ -22,6 +31,43 @@ help:
 	@echo "  make logs           Show logs from all services"
 	@echo "  make clean          Remove all containers and images"
 	@echo "  make test-kafka     Test Kafka connectivity"
+
+# Go build targets
+build-go:
+	@echo "🔨 Building all Go modules..."
+	@for module in $(MODULES); do \
+		echo "Building $$module..."; \
+		$(MAKE) -C $$module build; \
+	done
+	@echo "✅ All Go modules built!"
+
+clean-go:
+	@echo "🧹 Cleaning all Go modules..."
+	@for module in $(MODULES); do \
+		echo "Cleaning $$module..."; \
+		$(MAKE) -C $$module clean; \
+	done
+	@echo "✅ All Go modules cleaned!"
+
+test-go:
+	@echo "🧪 Testing all Go modules..."
+	@for module in $(MODULES); do \
+		echo "Testing $$module..."; \
+		$(MAKE) -C $$module test; \
+	done
+	@echo "✅ All Go modules tested!"
+
+install-go:
+	@echo "📦 Installing all Go modules..."
+	@for module in $(MODULES); do \
+		echo "Installing $$module..."; \
+		$(MAKE) -C $$module install; \
+	done
+	@echo "✅ All Go modules installed!"
+
+# Convenience aliases
+build: build-go
+test: test-go
 
 # Development mode - just Kafka and Kafdrop (run apps from host)
 dev-up:

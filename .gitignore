@@ -1,31 +1,43 @@
-# Go binaries and build artifacts
+# Binaries and build artifacts
+*/bin/
+bin/
+
+# Go build artifacts
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-/pipeline/*/main
-/pipeline/*/log-ingestion
-/pipeline/*/log-processor
-/pipeline/*/log-exporter
-
-# Go test binary, built with `go test -c`
 *.test
-
-# Go output of `go test -race`
 *.out
-
-# Go dependency vendoring (not needed with modules)
-vendor/
 
 # Go workspace files
 go.work.sum
 
-# Python
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python virtual environments and cache
+venv/
 __pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Local config files (keep examples)
+config.yaml
+!config.yaml.example
+
+# Go dependency vendoring (not needed with modules)
+vendor/
+
+# Python
 *.py[cod]
 *$py.class
-*.so
 .Python
 build/
 develop-eggs/
@@ -41,26 +53,16 @@ var/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
-*.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
 .env
-venv/
-env/
 ENV/
 
 # PyTest
 .pytest_cache/
 .coverage
 htmlcov/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
 
 # OS
 .DS_Store
@@ -76,7 +78,6 @@ Thumbs.db
 logs/
 
 # Configuration files with credentials
-config.yaml
 *.key
 *.pem
 *.crt
@@ -93,5 +94,4 @@ temp/
 # Application specific
 workdir/ pipeline/blob-monitor/blob-monitor
 pipeline/ingest/ingest
-pipeline/ingest/ingest
-ingest
+/ingest
