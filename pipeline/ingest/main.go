@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Log-Tools/commerce-logs-pipeline/config"
@@ -17,6 +18,19 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
+
+// generateBlobKey creates a standardized key for blob events
+// Format: {subscription}-{environment}-{cleanBlobName}-{suffix}
+// This removes the kubernetes/ prefix and adds environment context
+func generateBlobKey(subscription, environment, blobName, suffix string) string {
+	// Remove kubernetes/ prefix if present
+	cleanBlobName := blobName
+	if strings.HasPrefix(blobName, "kubernetes/") {
+		cleanBlobName = strings.TrimPrefix(blobName, "kubernetes/")
+	}
+
+	return fmt.Sprintf("%s-%s-%s-%s", subscription, environment, cleanBlobName, suffix)
+}
 
 // KafkaCompletionMessage defines the structure for the final completion event.
 // The ProcessedToEndOffset indicates the byte offset in the blob up to which
@@ -94,12 +108,12 @@ func ProcessBlobSegmentToKafka(
 		// ProcessedToEndOffset should reflect the known size of the blob if startOffset was beyond it.
 		// Or, if we want to say "we attempted to read from X and found nothing new up to Y",
 		// currentBlobTotalSize is the most accurate "end" we know.
-		return sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, 0, nil, nil)
+		return sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, 0, subscriptionID, environment, nil, nil)
 	}
 	// If startOffset is exactly at the end, no new data to download.
 	if startOffset == currentBlobTotalSize && currentBlobTotalSize > 0 { // Check currentBlobTotalSize > 0 for empty blobs
 		log.Printf("Start offset %d is at the current end of blob %s (size %d). No new data to process.", startOffset, azureBlobName, currentBlobTotalSize)
-		return sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, 0, nil, nil)
+		return sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, 0, subscriptionID, environment, nil, nil)
 	}
 
 	// 3. Determine download range
@@ -124,7 +138,7 @@ func ProcessBlobSegmentToKafka(
 		log.Printf("Downloaded 0 bytes. No new content to process from offset %d for blob %s.", startOffset, azureBlobName)
 		// Send completion message. ProcessedToEndOffset is currentBlobTotalSize,
 		// as that's the end of the blob content known before this download attempt.
-		return sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, 0, nil, nil)
+		return sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, 0, subscriptionID, environment, nil, nil)
 	}
 
 	// 5. UnGzip Stream
@@ -132,7 +146,7 @@ func ProcessBlobSegmentToKafka(
 	if err != nil {
 		if (err == io.EOF || err == io.ErrUnexpectedEOF) && actualDownloadedLength > 0 {
 			log.Printf("Gzip reader encountered EOF or UnexpectedEOF with %d bytes downloaded. This might indicate an empty or truncated gzipped stream segment from offset %d for blob %s. Sending completion as if 0 lines.", actualDownloadedLength, startOffset, azureBlobName)
-			return sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, 0, nil, nil)
+			return sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, 0, subscriptionID, environment, nil, nil)
 		}
 		return fmt.Errorf("failed to create gzip reader for blob %s (offset %d): %w", azureBlobName, startOffset, err)
 	}
@@ -171,9 +185,9 @@ func ProcessBlobSegmentToKafka(
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineCounter++
-		kafkaKey := fmt.Sprintf("%s-%d", azureBlobName, lineCounter)
+		kafkaKey := generateBlobKey(subscriptionID, environment, azureBlobName, fmt.Sprintf("line-%d", lineCounter))
 		message := &kafka.Message{
-			TopicPartition: kafka.TopicPartition{Topic: &kafkaTopic, Partition: kafka.PartitionAny},
+			TopicPartition: kafka.TopicPartition{Topic: &kafkaTopic, Partition: -1},
 			Key:            []byte(kafkaKey),
 			Value:          []byte(line),
 		}
@@ -197,7 +211,7 @@ func ProcessBlobSegmentToKafka(
 	// This reflects the size of the blob *before* this specific download operation began.
 	// If the blob grew during the download, currentBlobTotalSize still represents the "known end"
 	// when the decision to download this segment was made. The next run would pick up from this point.
-	err = sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, lineCounter, producer, deliveryChan)
+	err = sendCompletionMessage(ctx, kafkaBrokers, "Ingestion.Blobs", azureBlobName, startOffset, currentBlobTotalSize, lineCounter, subscriptionID, environment, producer, deliveryChan)
 	if err != nil {
 		return fmt.Errorf("failed to send completion message for blob %s (offset %d): %w", azureBlobName, startOffset, err)
 	}
@@ -225,6 +239,8 @@ func sendCompletionMessage(
 	processedFromOffset int64,
 	processedToEndOffset int64, // This is the key change, reflecting the end of the processed segment
 	linesSentInSegment int,
+	subscription string,
+	environment string,
 	existingProducer *kafka.Producer,
 	existingDeliveryChan chan kafka.Event,
 ) error {
@@ -240,9 +256,9 @@ func sendCompletionMessage(
 	}
 
 	// Key uses ProcessedFromOffset to identify the segment this completion message belongs to.
-	kafkaKeyCompletion := fmt.Sprintf("%s-offset%d-completion", blobName, processedFromOffset)
+	kafkaKeyCompletion := generateBlobKey(subscription, environment, blobName, fmt.Sprintf("offset%d-completion", processedFromOffset))
 	kafkaMessageCompletion := &kafka.Message{
-		TopicPartition: kafka.TopicPartition{Topic: &kafkaTopic, Partition: kafka.PartitionAny},
+		TopicPartition: kafka.TopicPartition{Topic: &kafkaTopic, Partition: -1},
 		Key:            []byte(kafkaKeyCompletion),
 		Value:          completionMsgJSON,
 	}
@@ -323,9 +339,9 @@ func sendBlobObservedMessage(
 		return fmt.Errorf("failed to marshal blob observed message for %s: %w", blobName, err)
 	}
 
-	kafkaKeyObserved := fmt.Sprintf("%s-observed", blobName)
+	kafkaKeyObserved := generateBlobKey(subscription, environment, blobName, "observed")
 	kafkaMessageObserved := &kafka.Message{
-		TopicPartition: kafka.TopicPartition{Topic: &[]string{"Ingestion.Blobs"}[0], Partition: kafka.PartitionAny},
+		TopicPartition: kafka.TopicPartition{Topic: &[]string{"Ingestion.Blobs"}[0], Partition: -1},
 		Key:            []byte(kafkaKeyObserved),
 		Value:          blobObservedMsgJSON,
 	}

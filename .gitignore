@@ -93,4 +93,4 @@ temp/
 # Application specific
 workdir/ pipeline/blob-monitor/blob-monitor
 pipeline/ingest/ingest
-ingest
+pipeline/ingest/ingest
