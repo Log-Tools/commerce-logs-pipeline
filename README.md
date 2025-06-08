@@ -1,6 +1,6 @@
-# Commerce Logs Pipeline
+# Commerce Logs Processing Pipeline
 
-A scalable, multi-phase log ingestion and processing pipeline for SAP Commerce Cloud environments.
+A scalable, multi-phase log ingestion and processing pipeline for commerce cloud environments.
 
 ## Architecture
 
@@ -38,7 +38,7 @@ The pipeline uses a YAML configuration format for managing multiple environments
 ```yaml
 subscriptions:
   cp2:
-    name: "SAP Commerce Cloud Subscription"
+            name: "Commerce Cloud Subscription"
     environments:
       P1:
         name: "Production Environment 1"

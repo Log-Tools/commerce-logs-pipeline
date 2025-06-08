@@ -81,7 +81,7 @@ def setup_secure_config():
             # Create a basic template
             template_content = """subscriptions:
   cp2:
-    name: "SAP Commerce Cloud Subscription"
+    name: "Commerce Cloud Subscription"
     environments:
       P1:
         name: "Production Environment 1"

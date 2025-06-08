@@ -105,7 +105,7 @@ def list_all_blobs(prefix=None, max_blobs_per_env=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='List blobs from Commerce Cloud storage',
+        description='List blobs from commerce cloud storage',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

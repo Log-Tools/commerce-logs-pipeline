@@ -1,6 +1,6 @@
 subscriptions:
   cp2:
-    name: "SAP Commerce Cloud Subscription"
+    name: "Commerce Cloud Subscription"
     environments:
       P1:
         name: "Production Environment 1"
