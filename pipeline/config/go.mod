@@ -1,6 +1,6 @@
 module github.com/Log-Tools/commerce-logs-pipeline/config
 
-go 1.21
+go 1.23.0
 
 require gopkg.in/yaml.v3 v3.0.1
 

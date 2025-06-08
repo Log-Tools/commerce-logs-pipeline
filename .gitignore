@@ -91,4 +91,6 @@ temp/
 *.backup
 
 # Application specific
-workdir/ 
+workdir/ pipeline/blob-monitor/blob-monitor
+pipeline/ingest/ingest
+ingest
