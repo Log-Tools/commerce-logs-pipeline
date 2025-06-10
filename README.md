@@ -6,8 +6,22 @@ A scalable, multi-phase log ingestion and processing pipeline for commerce cloud
 
 This repository contains Go modules for pipeline phases and Python CLI tools for administration:
 
+### Pipeline Flow
+
+```
+Azure Blob Storage → Blob Monitor → Kafka → Ingestion Pipeline → Processed Logs
+                         ↓             ↓
+                   [BlobObserved]  [BlobClosed]
+                   [BlobsListed]      Events
+```
+
+1. **Blob Monitor** continuously scans Azure Blob Storage and publishes discovery events
+2. **Ingestion Pipeline** consumes blob events and processes the actual log data
+3. **Blob Closing Detection** signals when blobs are ready for final processing
+
 ```
 ├── pipeline/                    # Go modules for pipeline phases
+│   ├── blob-monitor/           # Azure Blob discovery and monitoring
 │   ├── ingest/                 # Azure Blob → Kafka ingestion 
 │   └── config/                 # Shared configuration library
 ├── cli/                        # Python CLI tools
@@ -18,6 +32,13 @@ This repository contains Go modules for pipeline phases and Python CLI tools for
 ```
 
 ## Modules Overview
+
+### ✅ Blob Monitor (`pipeline/blob-monitor`)
+- Continuously monitors Azure Blob Storage for new log files
+- Publishes blob discovery events to Kafka for downstream processing
+- **Blob Closing Detection**: Automatically detects when blobs are no longer being written to
+- Multi-environment monitoring with configurable selectors
+- End-of-day overlap handling for timezone transitions
 
 ### ✅ Ingestion (`pipeline/ingest`)
 - Downloads gzipped log segments from Azure Blob Storage
@@ -167,6 +188,10 @@ All new modules must follow these standards for consistency and maintainability.
 Currently implemented modules:
 
 ```bash
+# Work on blob monitoring
+cd pipeline/blob-monitor
+go run cmd/blob-monitor/main.go configs/config.yaml
+
 # Work on ingestion
 cd pipeline/ingest
 go run main.go
@@ -174,6 +199,31 @@ go run main.go
 # Work with configuration
 cd pipeline/config
 go test
+```
+
+### Quick Development Workflow
+
+```bash
+# 1. Start development infrastructure
+make dev-up
+
+# 2. Run blob monitor (in terminal 1)
+make run-blob-monitor
+
+# 3. Monitor Kafka topics (in terminal 2) 
+# Visit http://localhost:9000 for Kafdrop UI
+
+# 4. Run ingestion pipeline (in terminal 3)
+cd pipeline/ingest
+SUBSCRIPTION_ID=cp2 ENVIRONMENT=P1 \
+AZURE_STORAGE_CONTAINER_NAME=commerce-logs-separated \
+AZURE_STORAGE_BLOB_NAME=your-blob.gz \
+KAFKA_BROKERS=localhost:9092 \
+KAFKA_TOPIC=commerce-logs \
+go run .
+
+# 5. Stop everything
+make dev-down
 ```
 
 ### Python Development
@@ -217,6 +267,72 @@ if err != nil {
 - `KAFKA_BROKERS` - Comma-separated Kafka brokers
 - `KAFKA_TOPIC` - Output topic
 - `START_OFFSET` - Optional starting byte offset
+
+## Running the Blob Monitor
+
+### Prerequisites
+- Secure configuration set up (`~/.commerce-logs-pipeline/config.yaml`)
+- Running Kafka cluster
+- Access to Azure Blob Storage
+
+### Basic Usage
+
+```bash
+cd pipeline/blob-monitor
+
+# Run with example configuration
+go run cmd/blob-monitor/main.go config.yaml.example
+
+# Run with custom configuration
+go run cmd/blob-monitor/main.go configs/config.yaml
+```
+
+### Configuration Example
+
+```yaml
+kafka:
+  brokers: "localhost:9092"
+  topic: "Ingestion.Blobs"
+
+global:
+  polling_interval: 300  # 5 minutes
+  timezone: "UTC"
+  blob_closing:
+    enabled: true
+    timeout_minutes: 5  # Consider blob closed after 5 minutes of inactivity
+
+environments:
+  - subscription: "cp2"
+    environment: "D1"
+    enabled: true
+    selectors:
+      - "apache-proxy"
+      - "api-service"
+      - "zookeeper"
+```
+
+### Event Types Published
+
+The blob monitor publishes three types of events to Kafka:
+
+1. **BlobObserved** - When a new blob is discovered
+2. **BlobsListed** - When scanning completes for a date/service/environment
+3. **BlobClosed** - When a blob is inactive for the configured timeout (enables workers to stop polling)
+
+### Development and Testing
+
+```bash
+cd pipeline/blob-monitor
+
+# Run tests
+make test
+
+# Build binary
+make build
+
+# Run with Docker
+make docker-run
+```
 
 ## Running the Ingestion Pipeline
 

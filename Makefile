@@ -14,6 +14,11 @@ help:
 	@echo "  make test-go         Run tests for all Go modules"
 	@echo "  make install-go      Install all Go modules to GOPATH/bin"
 	@echo ""
+	@echo "Module-specific (development):"
+	@echo "  make run-blob-monitor Run blob monitor with example config"
+	@echo "  make test-blob-monitor Run blob monitor tests only"
+	@echo "  make run-ingest      Run ingestion pipeline (requires env vars)"
+	@echo ""
 	@echo "Development (recommended):"
 	@echo "  make dev-up          Start Kafka & Kafdrop for local development"
 	@echo "  make dev-down        Stop development services"
@@ -64,6 +69,22 @@ install-go:
 		$(MAKE) -C $$module install; \
 	done
 	@echo "✅ All Go modules installed!"
+
+# Module-specific targets
+run-blob-monitor:
+	@echo "🔍 Starting blob monitor with example configuration..."
+	cd pipeline/blob-monitor && go run cmd/blob-monitor/main.go config.yaml.example
+
+test-blob-monitor:
+	@echo "🧪 Testing blob monitor module..."
+	cd pipeline/blob-monitor && go test ./...
+
+run-ingest:
+	@echo "📥 Running ingestion pipeline..."
+	@echo "⚠️  Make sure these environment variables are set:"
+	@echo "   SUBSCRIPTION_ID, ENVIRONMENT, AZURE_STORAGE_CONTAINER_NAME"
+	@echo "   AZURE_STORAGE_BLOB_NAME, KAFKA_BROKERS, KAFKA_TOPIC"
+	cd pipeline/ingest && go run .
 
 # Convenience aliases
 build: build-go

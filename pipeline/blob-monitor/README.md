@@ -4,9 +4,10 @@ This service continuously monitors Azure Blob Storage for new log files from com
 
 ## Overview
 
-The Blob Monitor Service discovers new log blobs across multiple environments and publishes two types of events:
+The Blob Monitor Service discovers new log blobs across multiple environments and publishes three types of events:
 - **BlobObserved Events**: Individual blob discovery events
 - **BlobsListed Events**: Completion events indicating all blobs for a date/service/environment have been listed
+- **BlobClosed Events**: Signals that a blob is considered closed (no new data expected) after being inactive for a configurable timeout period
 
 ## Project Structure
 
@@ -53,6 +54,7 @@ Azure Blob Storage → Blob Monitor Service → Kafka Topic (Ingestion.Blobs)
 - **Current Day Monitoring**: Continuous polling for new blobs on the current day
 - **End-of-Day Handling**: Smart overlap period to handle timezone issues and delayed blob creation
 - **Configurable Polling**: Different polling intervals per environment
+- **Blob Closing Detection**: Automatically detect when blobs are no longer being written to
 - **Robust Error Handling**: Retry logic and graceful degradation
 
 ## Configuration
@@ -72,6 +74,9 @@ global:
   polling_interval: 300  # 5 minutes
   eod_overlap_minutes: 60  # 1 hour overlap
   timezone: "UTC"
+  blob_closing:
+    enabled: true
+    timeout_minutes: 5  # Consider blob closed after 5 minutes of inactivity
 
 date_range:
   days_back: 3  # Look back 3 days
@@ -159,6 +164,29 @@ Published after completing a scan for a specific date/service/environment:
 }
 ```
 
+### BlobClosed Event
+
+Published when a blob is considered closed (no new data expected):
+
+```json
+{
+  "subscription": "cp2",
+  "environment": "D1",
+  "blobName": "kubernetes/20250607.zookeeper-0_default_zookeeper-abc123.gz",
+  "serviceSelector": "zookeeper",
+  "lastModifiedDate": "2025-06-07T21:42:54Z",
+  "closedDate": "2025-06-07T21:47:54Z",
+  "sizeInBytes": 2140870,
+  "timeoutMinutes": 5
+}
+```
+
+This event signals to downstream workers that:
+- The blob has not been modified for the configured timeout period
+- No new data is expected to be written to this blob
+- Workers can stop polling the blob for changes
+- The blob is ready for final processing
+
 ## Usage
 
 ### Running Locally
@@ -199,6 +227,7 @@ The service provides comprehensive logging:
 🚀 Starting Commerce Cloud Blob Monitor Service
 📡 Kafka: localhost:9092 -> Ingestion.Blobs
 🌍 Monitoring 3 environments
+🔐 Starting blob closing detection (timeout: 5 minutes)
 🔍 Starting historical blob scan...
 📅 Scanning from 2025-06-04 to 2025-06-06
 📅 Scanning date: 20250607
@@ -351,6 +380,9 @@ global:
   polling_interval: int        # Default polling interval (seconds)
   eod_overlap_minutes: int     # End-of-day overlap period (minutes)
   timezone: string             # Timezone for date calculations
+  blob_closing:
+    enabled: bool              # Enable blob closing detection
+    timeout_minutes: int       # Minutes without modification to consider blob closed
 
 date_range:
   specific_date: string        # Start from specific date (YYYY-MM-DD)

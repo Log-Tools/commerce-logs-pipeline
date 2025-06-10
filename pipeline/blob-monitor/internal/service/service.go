@@ -84,12 +84,25 @@ func (f *MockStorageClientFactory) CreateClients(cfg *blobConfig.Config) (map[st
 	return make(map[string]*azblob.Client), nil
 }
 
+// BlobTracker tracks blob metadata for closing detection
+type BlobTracker struct {
+	Subscription    string
+	Environment     string
+	BlobName        string
+	LastModified    time.Time
+	LastChecked     time.Time
+	SizeInBytes     int64
+	ServiceSelector string
+	IsClosed        bool
+}
+
 // Orchestrates blob monitoring across multiple environments with configurable selectors
 type BlobMonitorService struct {
 	config         *blobConfig.Config
 	storageClients map[string]*azblob.Client // subscription+env -> client
 	kafkaProducer  Producer
 	selectors      map[string]*selectors.BlobSelector
+	blobTrackers   map[string]*BlobTracker // blob key -> tracker
 	mu             sync.RWMutex
 	stopChannel    chan struct{}
 }
@@ -140,6 +153,7 @@ func NewBlobMonitorService(cfg *blobConfig.Config, producer Producer, storageFac
 		storageClients: storageClients,
 		kafkaProducer:  producer,
 		selectors:      selectors.GetBlobSelectors(),
+		blobTrackers:   make(map[string]*BlobTracker),
 		stopChannel:    make(chan struct{}),
 	}
 
@@ -154,6 +168,13 @@ func (s *BlobMonitorService) Start(ctx context.Context) error {
 
 	// Start Kafka delivery report handler
 	go s.handleKafkaDeliveryReports()
+
+	// Start blob closing detection if enabled
+	if s.config.Global.BlobClosingConfig.Enabled {
+		log.Printf("🔐 Starting blob closing detection (timeout: %d minutes)",
+			s.config.Global.BlobClosingConfig.TimeoutMinutes)
+		go s.checkClosedBlobs(ctx)
+	}
 
 	// Perform historical scan first
 	if err := s.performHistoricalScan(ctx); err != nil {
@@ -382,6 +403,11 @@ func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *az
 		if err := s.publishBlobObservedEvent(event); err != nil {
 			log.Printf("❌ Failed to publish BlobObserved event for %s: %v", *blob.Name, err)
 		}
+
+		// Track blob for closing detection if enabled
+		if s.config.Global.BlobClosingConfig.Enabled {
+			s.trackBlob(event)
+		}
 	}
 
 	// Publish BlobsListed completion event
@@ -485,4 +511,141 @@ func (s *BlobMonitorService) PublishBlobObservedEvent(event events.BlobObservedE
 // PublishBlobsListedEvent exposes completion event publishing for integration tests
 func (s *BlobMonitorService) PublishBlobsListedEvent(event events.BlobsListedEvent) error {
 	return s.publishBlobsListedEvent(event)
+}
+
+// PublishBlobClosedEvent exposes blob closed event publishing for integration tests
+func (s *BlobMonitorService) PublishBlobClosedEvent(event events.BlobClosedEvent) error {
+	return s.publishBlobClosedEvent(event)
+}
+
+// Tracks blob metadata for closing detection
+func (s *BlobMonitorService) trackBlob(event events.BlobObservedEvent) {
+	// Skip tracking if blob closing is disabled
+	if !s.config.Global.BlobClosingConfig.Enabled {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	blobKey := generateBlobKey(event.Subscription, event.Environment, event.BlobName, "tracker")
+
+	now := time.Now()
+	existing, exists := s.blobTrackers[blobKey]
+
+	if exists {
+		// Update existing tracker if blob was modified
+		if event.LastModifiedDate.After(existing.LastModified) {
+			existing.LastModified = event.LastModifiedDate
+			existing.SizeInBytes = event.SizeInBytes
+			existing.IsClosed = false // Reset closed status if blob was modified
+		}
+		existing.LastChecked = now
+	} else {
+		// Create new tracker
+		s.blobTrackers[blobKey] = &BlobTracker{
+			Subscription:    event.Subscription,
+			Environment:     event.Environment,
+			BlobName:        event.BlobName,
+			LastModified:    event.LastModifiedDate,
+			LastChecked:     now,
+			SizeInBytes:     event.SizeInBytes,
+			ServiceSelector: event.ServiceSelector,
+			IsClosed:        false,
+		}
+	}
+}
+
+// Periodically checks for blobs that should be considered closed
+func (s *BlobMonitorService) checkClosedBlobs(ctx context.Context) {
+	timeout := time.Duration(s.config.Global.BlobClosingConfig.TimeoutMinutes) * time.Minute
+
+	// Check every minute for closed blobs (could be configurable in the future)
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	log.Printf("🔐 Blob closing detector started (checking every minute)")
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("🔐 Blob closing detector stopped due to context cancellation")
+			return
+		case <-s.stopChannel:
+			log.Printf("🔐 Blob closing detector stopped")
+			return
+		case <-ticker.C:
+			s.detectClosedBlobs(timeout)
+		}
+	}
+}
+
+// Detects and publishes events for blobs that have exceeded the closing timeout
+func (s *BlobMonitorService) detectClosedBlobs(timeout time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var closedBlobs []string
+
+	for blobKey, tracker := range s.blobTrackers {
+		if tracker.IsClosed {
+			continue // Already marked as closed
+		}
+
+		// Check if blob has been inactive for the timeout period
+		if now.Sub(tracker.LastModified) >= timeout {
+			tracker.IsClosed = true
+			closedBlobs = append(closedBlobs, blobKey)
+
+			event := events.BlobClosedEvent{
+				Subscription:     tracker.Subscription,
+				Environment:      tracker.Environment,
+				BlobName:         tracker.BlobName,
+				ServiceSelector:  tracker.ServiceSelector,
+				LastModifiedDate: tracker.LastModified,
+				ClosedDate:       now,
+				SizeInBytes:      tracker.SizeInBytes,
+				TimeoutMinutes:   s.config.Global.BlobClosingConfig.TimeoutMinutes,
+			}
+
+			if err := s.publishBlobClosedEvent(event); err != nil {
+				log.Printf("❌ Failed to publish BlobClosed event for %s: %v", tracker.BlobName, err)
+			} else {
+				log.Printf("🔐 Blob closed: %s (inactive for %v)", tracker.BlobName, timeout)
+			}
+		}
+	}
+
+	// Clean up old closed blobs (keep for 24 hours after closing)
+	cleanupThreshold := now.Add(-24 * time.Hour)
+	for blobKey, tracker := range s.blobTrackers {
+		if tracker.IsClosed && tracker.LastChecked.Before(cleanupThreshold) {
+			delete(s.blobTrackers, blobKey)
+		}
+	}
+
+	if len(closedBlobs) > 0 {
+		log.Printf("🔐 Detected %d newly closed blobs", len(closedBlobs))
+	}
+}
+
+// Publishes blob closed events to notify downstream consumers
+func (s *BlobMonitorService) publishBlobClosedEvent(event events.BlobClosedEvent) error {
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal BlobClosed event: %w", err)
+	}
+
+	key := generateBlobKey(event.Subscription, event.Environment, event.BlobName, "closed")
+
+	message := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic: &s.config.Kafka.Topic,
+		},
+		Key:   []byte(key),
+		Value: eventJSON,
+	}
+
+	return s.kafkaProducer.Produce(message, nil)
 }

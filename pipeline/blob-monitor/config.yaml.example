@@ -21,6 +21,15 @@ global:
   
   # Time zone for date calculations (important for end-of-day transitions)
   timezone: "UTC"
+  
+  # Blob closing detection settings
+  blob_closing:
+    # Enable blob closing detection
+    enabled: true
+    
+    # Minutes without modification to consider a blob closed
+    # Once closed, workers can stop polling the blob as no new data is expected
+    timeout_minutes: 5
 
 # Date Range Configuration
 date_range:

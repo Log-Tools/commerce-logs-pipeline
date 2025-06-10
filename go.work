@@ -6,5 +6,4 @@ use (
 	./pipeline/blob-monitor
 	./pipeline/config
 	./pipeline/ingest
-	./pipeline/ingestion-state
 )

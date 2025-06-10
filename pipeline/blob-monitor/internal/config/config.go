@@ -28,9 +28,16 @@ type KafkaConfig struct {
 
 // GlobalConfig contains global service settings
 type GlobalConfig struct {
-	PollingInterval   int    `yaml:"polling_interval"`    // seconds
-	EODOverlapMinutes int    `yaml:"eod_overlap_minutes"` // minutes
-	Timezone          string `yaml:"timezone"`
+	PollingInterval   int               `yaml:"polling_interval"`    // seconds
+	EODOverlapMinutes int               `yaml:"eod_overlap_minutes"` // minutes
+	Timezone          string            `yaml:"timezone"`
+	BlobClosingConfig BlobClosingConfig `yaml:"blob_closing"`
+}
+
+// BlobClosingConfig defines blob closing detection settings
+type BlobClosingConfig struct {
+	TimeoutMinutes int  `yaml:"timeout_minutes"` // minutes without modification to consider blob closed
+	Enabled        bool `yaml:"enabled"`         // whether to enable blob closing detection
 }
 
 // DateRangeConfig defines how far back to look for blobs
@@ -104,6 +111,13 @@ func validateConfig(config *Config) error {
 	}
 	if config.Global.EODOverlapMinutes < 0 {
 		return fmt.Errorf("global.eod_overlap_minutes cannot be negative")
+	}
+
+	// Validate blob closing configuration
+	if config.Global.BlobClosingConfig.Enabled {
+		if config.Global.BlobClosingConfig.TimeoutMinutes <= 0 {
+			return fmt.Errorf("global.blob_closing.timeout_minutes must be positive when enabled")
+		}
 	}
 
 	// Validate timezone

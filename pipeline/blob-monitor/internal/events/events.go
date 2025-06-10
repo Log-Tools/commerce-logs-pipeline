@@ -24,3 +24,15 @@ type BlobsListedEvent struct {
 	BlobCount        int       `json:"blobCount"`        // Number of blobs found for this selector
 	TotalBytes       int64     `json:"totalBytes"`       // Total size of all blobs found
 }
+
+// BlobClosedEvent indicates a blob is considered closed (no new data expected)
+type BlobClosedEvent struct {
+	Subscription     string    `json:"subscription"`
+	Environment      string    `json:"environment"`
+	BlobName         string    `json:"blobName"`
+	ServiceSelector  string    `json:"serviceSelector"`
+	LastModifiedDate time.Time `json:"lastModifiedDate"` // When the blob was last modified
+	ClosedDate       time.Time `json:"closedDate"`       // When we determined it was closed
+	SizeInBytes      int64     `json:"sizeInBytes"`      // Final size when closed
+	TimeoutMinutes   int       `json:"timeoutMinutes"`   // Configured timeout that triggered closure
+}

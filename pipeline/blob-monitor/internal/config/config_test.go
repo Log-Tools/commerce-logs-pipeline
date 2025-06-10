@@ -444,6 +444,88 @@ func TestLogLevelValidation(t *testing.T) {
 	}
 }
 
+// Validates blob closing configuration accepts valid settings and rejects invalid ones
+func TestBlobClosingConfigValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      BlobClosingConfig
+		expectError bool
+	}{
+		{
+			name: "valid enabled config",
+			config: BlobClosingConfig{
+				Enabled:        true,
+				TimeoutMinutes: 5,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid disabled config",
+			config: BlobClosingConfig{
+				Enabled:        false,
+				TimeoutMinutes: 0, // Should be ignored when disabled
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid timeout when enabled",
+			config: BlobClosingConfig{
+				Enabled:        true,
+				TimeoutMinutes: 0,
+			},
+			expectError: true,
+		},
+		{
+			name: "negative timeout when enabled",
+			config: BlobClosingConfig{
+				Enabled:        true,
+				TimeoutMinutes: -5,
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				Kafka: KafkaConfig{
+					Brokers: "localhost:9092",
+					Topic:   "test-topic",
+				},
+				Global: GlobalConfig{
+					PollingInterval:   300,
+					BlobClosingConfig: tt.config,
+				},
+				DateRange: DateRangeConfig{
+					DaysBack: intPtr(1),
+				},
+				Environments: []EnvironmentConfig{
+					{
+						Subscription: "test",
+						Environment:  "test",
+						Enabled:      true,
+						Selectors:    []string{"apache-proxy"},
+					},
+				},
+				Storage: StorageConfig{
+					ContainerName: "test",
+				},
+				Monitoring: MonitoringConfig{
+					LogLevel: "info",
+				},
+			}
+
+			err := validateConfig(config)
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "blob_closing")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 // Helper functions
 func intPtr(i int) *int {
 	return &i
