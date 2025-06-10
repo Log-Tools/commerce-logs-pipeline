@@ -1,4 +1,4 @@
-package main
+package selectors
 
 import (
 	"fmt"
@@ -15,8 +15,7 @@ type BlobSelector struct {
 	Predicate     func(blobName string) bool // Function to filter blobs
 }
 
-// GetBlobSelectors returns the map of all available blob selectors
-// This is the single source of truth for selector definitions
+// Provides centralized registry of all blob filtering rules for consistent service selection
 func GetBlobSelectors() map[string]*BlobSelector {
 	return map[string]*BlobSelector{
 		"apache-proxy": {
@@ -27,7 +26,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			ServicePrefix: ".apache2-igc",
 			Predicate: func(blobName string) bool {
 				return strings.Contains(blobName, "_proxy-") &&
-					!strings.Contains(blobName, "_cache-cleaner-")
+					!strings.Contains(blobName, "cache-cleaner")
 			},
 		},
 
@@ -38,8 +37,8 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".api-",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "_cache-cleaner-") &&
-					!strings.Contains(blobName, "_log-forwarder-")
+				return !strings.Contains(blobName, "cache-cleaner") &&
+					!strings.Contains(blobName, "log-forwarder")
 			},
 		},
 
@@ -50,7 +49,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".backoffice",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "_cache-cleaner-")
+				return !strings.Contains(blobName, "cache-cleaner")
 			},
 		},
 
@@ -61,8 +60,8 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".backgroundprocessing",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "_cache-cleaner-") &&
-					!strings.Contains(blobName, "_log-forwarder-")
+				return !strings.Contains(blobName, "cache-cleaner") &&
+					!strings.Contains(blobName, "log-forwarder")
 			},
 		},
 
@@ -73,7 +72,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".jsapps",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "_cache-cleaner-")
+				return !strings.Contains(blobName, "cache-cleaner")
 			},
 		},
 
@@ -84,7 +83,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".imageprocessing",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "_cache-cleaner-")
+				return !strings.Contains(blobName, "cache-cleaner")
 			},
 		},
 
@@ -101,7 +100,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 	}
 }
 
-// ValidateSelector checks if a selector name exists in the available selectors
+// Prevents runtime errors by rejecting unknown selector names during configuration parsing
 func ValidateSelector(selectorName string) error {
 	selectors := GetBlobSelectors()
 	if _, exists := selectors[selectorName]; !exists {
@@ -111,7 +110,7 @@ func ValidateSelector(selectorName string) error {
 	return nil
 }
 
-// GetSelector retrieves a selector by name
+// Retrieves configured selector for runtime blob filtering operations
 func GetSelector(selectorName string) (*BlobSelector, error) {
 	selectors := GetBlobSelectors()
 	selector, exists := selectors[selectorName]
@@ -131,7 +130,7 @@ func getAvailableSelectorNames() []string {
 	return names
 }
 
-// FilterBlobsForDate adds date filtering to selector predicate
+// Applies both date-based filtering and selector predicates to optimize blob processing
 func (s *BlobSelector) FilterBlobsForDate(blobs []string, date string) []string {
 	datePrefix := s.AzurePrefix + date + s.ServicePrefix
 	var filtered []string
@@ -149,7 +148,7 @@ func (s *BlobSelector) FilterBlobsForDate(blobs []string, date string) []string 
 	return filtered
 }
 
-// GetDatePrefix returns the Azure prefix for a specific date
+// Constructs Azure Storage prefix to minimize network overhead during blob listing
 func (s *BlobSelector) GetDatePrefix(date string) string {
 	return s.AzurePrefix + date + s.ServicePrefix
 }

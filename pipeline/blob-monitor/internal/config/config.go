@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -69,7 +69,7 @@ type ErrorHandlingConfig struct {
 	ContinueOnEnvironmentError bool   `yaml:"continue_on_environment_error"`
 }
 
-// LoadConfig loads and validates the configuration from file
+// Parses YAML configuration file and validates all settings for runtime safety
 func LoadConfig(configPath string) (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -88,7 +88,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	return &config, nil
 }
 
-// validateConfig performs comprehensive validation of the configuration
+// Performs comprehensive validation to catch configuration errors before runtime
 func validateConfig(config *Config) error {
 	// Validate Kafka configuration
 	if config.Kafka.Brokers == "" {
@@ -159,7 +159,7 @@ func validateConfig(config *Config) error {
 	return nil
 }
 
-// validateDateRange validates the date range configuration
+// Ensures date range configuration is logically consistent and prevents conflicting options
 func validateDateRange(dateRange *DateRangeConfig) error {
 	if dateRange.SpecificDate != nil && dateRange.DaysBack != nil {
 		return fmt.Errorf("cannot specify both specific_date and days_back")
@@ -183,7 +183,7 @@ func validateDateRange(dateRange *DateRangeConfig) error {
 	return nil
 }
 
-// validateEnvironment validates a single environment configuration
+// Validates environment configuration and skips validation for disabled environments to avoid errors
 func validateEnvironment(env *EnvironmentConfig, index int) error {
 	if env.Subscription == "" {
 		return fmt.Errorf("subscription is required")
@@ -199,13 +199,6 @@ func validateEnvironment(env *EnvironmentConfig, index int) error {
 		return fmt.Errorf("at least one selector must be specified")
 	}
 
-	// Validate that all referenced selectors exist
-	for j, selectorName := range env.Selectors {
-		if err := ValidateSelector(selectorName); err != nil {
-			return fmt.Errorf("selector[%d] '%s': %w", j, selectorName, err)
-		}
-	}
-
 	if env.PollingInterval != nil && *env.PollingInterval <= 0 {
 		return fmt.Errorf("polling_interval must be positive")
 	}
@@ -213,7 +206,7 @@ func validateEnvironment(env *EnvironmentConfig, index int) error {
 	return nil
 }
 
-// GetPollingInterval returns the effective polling interval for an environment
+// Returns the effective polling interval, allowing per-environment overrides of global settings
 func (env *EnvironmentConfig) GetPollingInterval(globalInterval int) int {
 	if env.PollingInterval != nil {
 		return *env.PollingInterval
@@ -221,32 +214,26 @@ func (env *EnvironmentConfig) GetPollingInterval(globalInterval int) int {
 	return globalInterval
 }
 
-// GetStartDate returns the calculated start date based on the date range configuration
+// Calculates the monitoring start date based on configuration, handling both absolute and relative dates
 func (config *Config) GetStartDate() (time.Time, error) {
 	location, err := time.LoadLocation(config.Global.Timezone)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("invalid timezone: %w", err)
 	}
 
-	now := time.Now().In(location)
-
 	if config.DateRange.SpecificDate != nil {
-		startDate, err := time.ParseInLocation("2006-01-02", *config.DateRange.SpecificDate, location)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("invalid specific_date: %w", err)
-		}
-		return startDate, nil
+		return time.Parse("2006-01-02", *config.DateRange.SpecificDate)
 	}
 
 	if config.DateRange.DaysBack != nil {
-		startDate := now.AddDate(0, 0, -*config.DateRange.DaysBack)
-		return startDate, nil
+		now := time.Now().In(location)
+		return now.AddDate(0, 0, -*config.DateRange.DaysBack), nil
 	}
 
-	return time.Time{}, fmt.Errorf("no valid date range configuration")
+	return time.Time{}, fmt.Errorf("no valid date range configuration found")
 }
 
-// IsInEODOverlapPeriod checks if current time is in the end-of-day overlap period
+// Determines whether current time falls within end-of-day overlap period for cross-midnight processing
 func (config *Config) IsInEODOverlapPeriod() (bool, error) {
 	location, err := time.LoadLocation(config.Global.Timezone)
 	if err != nil {
@@ -255,9 +242,7 @@ func (config *Config) IsInEODOverlapPeriod() (bool, error) {
 
 	now := time.Now().In(location)
 
-	// Check if we're in the first N minutes of the day
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location)
-	overlapEnd := startOfDay.Add(time.Duration(config.Global.EODOverlapMinutes) * time.Minute)
-
-	return now.Before(overlapEnd), nil
+	// Check if we're within the first N minutes of the day
+	minutesFromMidnight := now.Hour()*60 + now.Minute()
+	return minutesFromMidnight < config.Global.EODOverlapMinutes, nil
 }

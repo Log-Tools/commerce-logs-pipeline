@@ -8,6 +8,37 @@ The Blob Monitor Service discovers new log blobs across multiple environments an
 - **BlobObserved Events**: Individual blob discovery events
 - **BlobsListed Events**: Completion events indicating all blobs for a date/service/environment have been listed
 
+## Project Structure
+
+```
+pipeline/blob-monitor/
+├── cmd/blob-monitor/          # Application entry point
+│   └── main.go               # Main function and CLI setup
+├── internal/                 # Internal packages (not importable externally)
+│   ├── config/              # Configuration management
+│   │   ├── config.go        # Config structures and validation
+│   │   └── config_test.go   # Configuration unit tests
+│   ├── events/              # Event type definitions
+│   │   └── events.go        # BlobObserved and BlobsListed events
+│   ├── selectors/           # Blob selector logic
+│   │   ├── selectors.go     # Service-specific blob filtering
+│   │   └── selectors_test.go # Selector unit tests
+│   └── service/             # Core service implementation
+│       ├── service.go       # Main service logic
+│       └── service_test.go  # Service unit tests with mocks
+├── test/                    # Integration tests
+│   └── integration_test.go  # Kafka integration tests with testcontainers
+├── configs/                 # Configuration files
+│   └── config.yaml         # Default configuration
+├── deployments/             # Deployment configurations
+│   └── Dockerfile          # Multi-stage Docker build
+├── bin/                     # Built binaries (gitignored)
+├── Makefile                 # Build, test, and development commands
+├── go.mod                   # Go module definition
+├── go.sum                   # Dependency checksums
+└── README.md               # This documentation
+```
+
 ## Architecture
 
 ```
@@ -29,7 +60,7 @@ Azure Blob Storage → Blob Monitor Service → Kafka Topic (Ingestion.Blobs)
 ### Example Configuration File
 
 ```yaml
-# config.yaml
+# configs/config.yaml
 kafka:
   brokers: "localhost:9092"
   topic: "Ingestion.Blobs"
@@ -66,7 +97,7 @@ monitoring:
 
 ## Blob Selectors
 
-Blob selectors are defined in code and combine Azure prefix with predicate functions:
+Blob selectors are defined in `internal/selectors/selectors.go` and combine Azure prefix with predicate functions:
 
 ### Available Selectors
 
@@ -133,22 +164,23 @@ Published after completing a scan for a specific date/service/environment:
 ### Running Locally
 
 ```bash
-# Build the service
-go build -o blob-monitor .
+# Build and run with default config
+make run
 
-# Run with configuration file
-./blob-monitor config.yaml
+# Or build first, then run manually
+make build
+./bin/blob-monitor configs/config.yaml
 ```
 
 ### Docker Deployment
 
 ```bash
-# Build Docker image
-docker build -t commerce-blob-monitor .
+# Build and run with Docker (using Makefile)
+make docker-run
 
-# Run with config mounted
-docker run -v $(pwd)/config.yaml:/app/config.yaml \
-  commerce-blob-monitor config.yaml
+# Or manually
+docker build -f deployments/Dockerfile -t commerce-blob-monitor .
+docker run -v $(pwd)/configs:/app/configs commerce-blob-monitor configs/config.yaml
 ```
 
 ### Environment Variables
@@ -232,19 +264,31 @@ During the first hour of each day (configurable):
 
 ### Adding New Selectors
 
-1. Add selector definition to `selectors.go`:
+1. Add selector definition to `internal/selectors/selectors.go`:
 ```go
 "new-service": {
-    Name:        "new-service",
-    DisplayName: "New Service",
-    AzurePrefix: "kubernetes/",
+    Name:          "new-service",
+    DisplayName:   "New Service",
+    Description:   "New service logs",
+    AzurePrefix:   "kubernetes/",
+    ServicePrefix: ".new-service",
     Predicate: func(blobName string) bool {
-        return strings.Contains(blobName, "new-service")
+        return strings.Contains(blobName, "new-service") &&
+               !strings.Contains(blobName, "_cache-cleaner-")
     },
 }
 ```
 
-2. Reference in configuration:
+2. Add tests in `internal/selectors/selectors_test.go`:
+```go
+func TestNewServiceSelector(t *testing.T) {
+    selector, err := GetSelector("new-service")
+    require.NoError(t, err)
+    // Add test cases...
+}
+```
+
+3. Reference in configuration:
 ```yaml
 environments:
   - selectors:
@@ -254,27 +298,40 @@ environments:
 ### Testing
 
 ```bash
-# Run tests
-go test ./...
+# Run all tests
+make test
 
-# Test configuration validation
-./blob-monitor --validate-config config.yaml
+# Run only unit tests (fast)
+make test-unit
 
-# Test specific selector
-./blob-monitor --test-selector apache-proxy
+# Run only integration tests (requires Docker)
+make test-integration
+
+# Run tests with coverage report
+make test-coverage
+
+# Manual testing
+go test ./internal/...                    # Unit tests
+go test -tags=integration ./test/...      # Integration tests
 ```
 
 ### Building
 
 ```bash
-# Local build
-go build -o blob-monitor .
+# Build using Makefile (recommended)
+make build
 
-# Cross-platform build  
-GOOS=linux GOARCH=amd64 go build -o blob-monitor-linux .
+# Development build with race detection
+make dev-build
 
-# Docker build
-docker build -t commerce-blob-monitor .
+# Cross-platform release builds
+make release
+
+# Build Docker image
+make docker-build
+
+# Manual build (from cmd directory)
+cd cmd/blob-monitor && go build -o ../../bin/blob-monitor .
 ```
 
 ## Configuration Reference

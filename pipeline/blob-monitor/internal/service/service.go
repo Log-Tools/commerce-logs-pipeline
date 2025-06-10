@@ -1,57 +1,41 @@
-package main
+package service
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Log-Tools/commerce-logs-pipeline/config"
+	blobConfig "github.com/Log-Tools/commerce-logs-pipeline/pipeline/blob-monitor/internal/config"
+	"github.com/Log-Tools/commerce-logs-pipeline/pipeline/blob-monitor/internal/events"
+	"github.com/Log-Tools/commerce-logs-pipeline/pipeline/blob-monitor/internal/selectors"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
-// BlobMonitorService manages the blob monitoring and event publishing
-type BlobMonitorService struct {
-	config         *Config
-	storageClients map[string]*azblob.Client // subscription+env -> client
-	kafkaProducer  *kafka.Producer
-	selectors      map[string]*BlobSelector
-	mu             sync.RWMutex
-	stopChannel    chan struct{}
+// Abstracts Kafka producer operations to enable testing with mocks
+type Producer interface {
+	Produce(msg *kafka.Message, deliveryChan chan kafka.Event) error
+	Events() chan kafka.Event
+	Flush(timeoutMs int) int
+	Close()
 }
 
-// NewBlobMonitorService creates a new blob monitoring service instance
-func NewBlobMonitorService(configPath string) (*BlobMonitorService, error) {
-	// Load and validate configuration
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
-	}
+// Abstracts storage client creation to enable dependency injection and testing
+type StorageClientFactory interface {
+	CreateClients(cfg *blobConfig.Config) (map[string]*azblob.Client, error)
+}
 
-	// Initialize Kafka producer
-	kafkaConfig := &kafka.ConfigMap{
-		"bootstrap.servers": cfg.Kafka.Brokers,
-	}
+// Implements Azure storage client creation for production use
+type AzureStorageClientFactory struct{}
 
-	// Add producer config from YAML
-	for key, value := range cfg.Kafka.ProducerConfig {
-		kafkaConfig.SetKey(key, value)
-	}
-
-	producer, err := kafka.NewProducer(kafkaConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Kafka producer: %w", err)
-	}
-
-	// Initialize storage clients for each environment
+// Creates Azure blob storage clients for all enabled environments
+func (f *AzureStorageClientFactory) CreateClients(cfg *blobConfig.Config) (map[string]*azblob.Client, error) {
 	storageClients := make(map[string]*azblob.Client)
 	storageConfig, err := config.LoadConfig()
 	if err != nil {
@@ -89,47 +73,109 @@ func NewBlobMonitorService(configPath string) (*BlobMonitorService, error) {
 		storageClients[clientKey] = client
 	}
 
+	return storageClients, nil
+}
+
+// Provides empty storage clients for testing scenarios
+type MockStorageClientFactory struct{}
+
+// Returns empty client map for unit testing without Azure dependencies
+func (f *MockStorageClientFactory) CreateClients(cfg *blobConfig.Config) (map[string]*azblob.Client, error) {
+	return make(map[string]*azblob.Client), nil
+}
+
+// Orchestrates blob monitoring across multiple environments with configurable selectors
+type BlobMonitorService struct {
+	config         *blobConfig.Config
+	storageClients map[string]*azblob.Client // subscription+env -> client
+	kafkaProducer  Producer
+	selectors      map[string]*selectors.BlobSelector
+	mu             sync.RWMutex
+	stopChannel    chan struct{}
+}
+
+// Constructs service instance from configuration file path for simple deployment scenarios
+func NewBlobMonitorServiceFromFile(configPath string) (*BlobMonitorService, error) {
+	// Load and validate configuration
+	cfg, err := blobConfig.LoadConfig(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	return NewBlobMonitorServiceWithConfig(cfg)
+}
+
+// Constructs service instance from existing configuration for programmatic usage
+func NewBlobMonitorServiceWithConfig(cfg *blobConfig.Config) (*BlobMonitorService, error) {
+	// Initialize Kafka producer
+	kafkaConfig := &kafka.ConfigMap{
+		"bootstrap.servers": cfg.Kafka.Brokers,
+	}
+
+	// Add producer config from YAML
+	for key, value := range cfg.Kafka.ProducerConfig {
+		kafkaConfig.SetKey(key, value)
+	}
+
+	producer, err := kafka.NewProducer(kafkaConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kafka producer: %w", err)
+	}
+
+	// Use real Azure storage client factory for production
+	storageFactory := &AzureStorageClientFactory{}
+	return NewBlobMonitorService(cfg, producer, storageFactory)
+}
+
+// Constructs service instance with dependency injection for testing and flexibility
+func NewBlobMonitorService(cfg *blobConfig.Config, producer Producer, storageFactory StorageClientFactory) (*BlobMonitorService, error) {
+	// Create storage clients using injected factory
+	storageClients, err := storageFactory.CreateClients(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage clients: %w", err)
+	}
+
 	service := &BlobMonitorService{
 		config:         cfg,
 		storageClients: storageClients,
 		kafkaProducer:  producer,
-		selectors:      GetBlobSelectors(),
+		selectors:      selectors.GetBlobSelectors(),
 		stopChannel:    make(chan struct{}),
 	}
 
 	return service, nil
 }
 
-// Start begins the blob monitoring service
-func (blobMonitorService *BlobMonitorService) Start(ctx context.Context) error {
+// Initiates blob monitoring workflows based on configuration requirements
+func (s *BlobMonitorService) Start(ctx context.Context) error {
 	log.Printf("🚀 Starting Blob Monitor Service")
-	log.Printf("📡 Kafka: %s -> %s", blobMonitorService.config.Kafka.Brokers, blobMonitorService.config.Kafka.Topic)
-	log.Printf("🌍 Monitoring %d environments", len(blobMonitorService.config.Environments))
+	log.Printf("📡 Kafka: %s -> %s", s.config.Kafka.Brokers, s.config.Kafka.Topic)
+	log.Printf("🌍 Monitoring %d environments", len(s.config.Environments))
 
 	// Start Kafka delivery report handler
-	go blobMonitorService.handleKafkaDeliveryReports()
+	go s.handleKafkaDeliveryReports()
 
 	// Perform historical scan first
-	if err := blobMonitorService.performHistoricalScan(ctx); err != nil {
+	if err := s.performHistoricalScan(ctx); err != nil {
 		log.Printf("❌ Historical scan failed: %v", err)
-		if !blobMonitorService.config.ErrorHandling.ContinueOnEnvironmentError {
+		if !s.config.ErrorHandling.ContinueOnEnvironmentError {
 			return fmt.Errorf("historical scan failed: %w", err)
 		}
 	}
 
 	// Start current day monitoring if enabled
-	if blobMonitorService.config.DateRange.MonitorCurrentDay {
+	if s.config.DateRange.MonitorCurrentDay {
 		log.Printf("📈 Starting current day monitoring...")
-		blobMonitorService.startCurrentDayMonitoring(ctx)
+		s.startCurrentDayMonitoring(ctx)
 	}
 
 	// Wait for stop signal
-	<-blobMonitorService.stopChannel
+	<-s.stopChannel
 	log.Printf("🛑 Blob monitor service stopped")
 	return nil
 }
 
-// Stop gracefully shuts down the service
+// Coordinates graceful shutdown to prevent data loss and connection leaks
 func (s *BlobMonitorService) Stop() {
 	log.Printf("🔄 Stopping blob monitor service...")
 	close(s.stopChannel)
@@ -139,7 +185,7 @@ func (s *BlobMonitorService) Stop() {
 	s.kafkaProducer.Close()
 }
 
-// performHistoricalScan scans for blobs from the configured start date to yesterday
+// Processes historical date range to catch up on missed blobs before real-time monitoring
 func (s *BlobMonitorService) performHistoricalScan(ctx context.Context) error {
 	log.Printf("🔍 Starting historical blob scan...")
 
@@ -185,7 +231,7 @@ func (s *BlobMonitorService) performHistoricalScan(ctx context.Context) error {
 	return nil
 }
 
-// startCurrentDayMonitoring begins continuous monitoring of the current day
+// Launches concurrent monitoring goroutines for real-time blob detection
 func (s *BlobMonitorService) startCurrentDayMonitoring(ctx context.Context) {
 	// Start monitoring goroutines for each environment
 	for _, env := range s.config.Environments {
@@ -197,63 +243,61 @@ func (s *BlobMonitorService) startCurrentDayMonitoring(ctx context.Context) {
 	}
 }
 
-// monitorEnvironment continuously monitors a specific environment
-func (s *BlobMonitorService) monitorEnvironment(ctx context.Context, env EnvironmentConfig) {
-	interval := time.Duration(env.GetPollingInterval(s.config.Global.PollingInterval)) * time.Second
-	ticker := time.NewTicker(interval)
+// Maintains persistent monitoring loop for a single environment with configurable intervals
+func (s *BlobMonitorService) monitorEnvironment(ctx context.Context, env blobConfig.EnvironmentConfig) {
+	pollingInterval := time.Duration(env.GetPollingInterval(s.config.Global.PollingInterval)) * time.Second
+	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 
-	log.Printf("📡 Started monitoring %s/%s (interval: %v)",
-		env.Subscription, env.Environment, interval)
+	log.Printf("📡 Started monitoring %s/%s (interval: %v)", env.Subscription, env.Environment, pollingInterval)
 
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("📡 Stopped monitoring %s/%s due to context cancellation", env.Subscription, env.Environment)
 			return
 		case <-s.stopChannel:
+			log.Printf("📡 Stopped monitoring %s/%s due to service shutdown", env.Subscription, env.Environment)
 			return
 		case <-ticker.C:
 			if err := s.performCurrentDayMonitoring(ctx, env); err != nil {
-				log.Printf("❌ Current day monitoring failed for %s/%s: %v",
-					env.Subscription, env.Environment, err)
+				log.Printf("❌ Current day monitoring failed for %s/%s: %v", env.Subscription, env.Environment, err)
 			}
 		}
 	}
 }
 
-// performCurrentDayMonitoring scans current day (and previous day during EOD overlap)
-func (s *BlobMonitorService) performCurrentDayMonitoring(ctx context.Context, env EnvironmentConfig) error {
+// Handles current day scanning with end-of-day overlap period to catch cross-midnight blobs
+func (s *BlobMonitorService) performCurrentDayMonitoring(ctx context.Context, env blobConfig.EnvironmentConfig) error {
 	location, err := time.LoadLocation(s.config.Global.Timezone)
 	if err != nil {
 		return fmt.Errorf("invalid timezone: %w", err)
 	}
 
 	now := time.Now().In(location)
-	today := now.Format("20060102")
+	currentDate := now.Format("20060102")
 
-	// Always scan today
-	if err := s.scanEnvironmentForDate(ctx, env, today); err != nil {
-		return fmt.Errorf("failed to scan today: %w", err)
+	// Always scan current day
+	if err := s.scanEnvironmentForDate(ctx, env, currentDate); err != nil {
+		return fmt.Errorf("failed to scan current day: %w", err)
 	}
 
-	// Check if we should also scan yesterday (EOD overlap period)
+	// Check if we're in EOD overlap period and scan previous day too
 	inOverlap, err := s.config.IsInEODOverlapPeriod()
 	if err != nil {
-		log.Printf("⚠️ Failed to check EOD overlap: %v", err)
+		log.Printf("⚠️ Failed to check EOD overlap period: %v", err)
 	} else if inOverlap {
-		yesterday := now.AddDate(0, 0, -1).Format("20060102")
-		log.Printf("🌅 In EOD overlap period, also scanning yesterday: %s", yesterday)
-
-		if err := s.scanEnvironmentForDate(ctx, env, yesterday); err != nil {
-			log.Printf("⚠️ Failed to scan yesterday during EOD overlap: %v", err)
+		previousDate := now.AddDate(0, 0, -1).Format("20060102")
+		if err := s.scanEnvironmentForDate(ctx, env, previousDate); err != nil {
+			log.Printf("⚠️ Failed to scan previous day during EOD overlap: %v", err)
 		}
 	}
 
 	return nil
 }
 
-// scanEnvironmentForDate scans all selectors for a specific environment and date
-func (s *BlobMonitorService) scanEnvironmentForDate(ctx context.Context, env EnvironmentConfig, date string) error {
+// Orchestrates blob discovery across all configured selectors for a given environment and date
+func (s *BlobMonitorService) scanEnvironmentForDate(ctx context.Context, env blobConfig.EnvironmentConfig, date string) error {
 	clientKey := fmt.Sprintf("%s-%s", env.Subscription, env.Environment)
 	client, exists := s.storageClients[clientKey]
 	if !exists {
@@ -262,7 +306,7 @@ func (s *BlobMonitorService) scanEnvironmentForDate(ctx context.Context, env Env
 
 	// Scan each configured selector
 	for _, selectorName := range env.Selectors {
-		selector, err := GetSelector(selectorName)
+		selector, err := selectors.GetSelector(selectorName)
 		if err != nil {
 			return fmt.Errorf("failed to get selector %s: %w", selectorName, err)
 		}
@@ -280,15 +324,14 @@ func (s *BlobMonitorService) scanEnvironmentForDate(ctx context.Context, env Env
 	return nil
 }
 
-// scanSelectorForDate scans blobs for a specific selector, environment, and date
+// Executes Azure blob listing and publishes discovered blobs with precise timing metadata
 func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *azblob.Client,
-	env EnvironmentConfig, selector *BlobSelector, date string) error {
+	env blobConfig.EnvironmentConfig, selector *selectors.BlobSelector, date string) error {
 
 	// Capture listing start time BEFORE making the request (critical for consistency)
 	listingStartTime := time.Now()
 
-	log.Printf("🔍 Scanning %s/%s for %s on %s",
-		env.Subscription, env.Environment, selector.Name, date)
+	log.Printf("🔍 Scanning %s/%s for %s on %s", env.Subscription, env.Environment, selector.Name, date)
 
 	// List blobs with date prefix
 	prefix := selector.GetDatePrefix(date)
@@ -326,7 +369,7 @@ func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *az
 
 	// Publish BlobObserved events for each found blob
 	for _, blob := range foundBlobs {
-		event := BlobObservedEvent{
+		event := events.BlobObservedEvent{
 			Subscription:     env.Subscription,
 			Environment:      env.Environment,
 			BlobName:         *blob.Name,
@@ -342,7 +385,7 @@ func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *az
 	}
 
 	// Publish BlobsListed completion event
-	completionEvent := BlobsListedEvent{
+	completionEvent := events.BlobsListedEvent{
 		Subscription:     env.Subscription,
 		Environment:      env.Environment,
 		ServiceSelector:  selector.Name,
@@ -360,21 +403,8 @@ func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *az
 	return nil
 }
 
-// creates a standardized key for blob events
-// Format: {subscription}-{environment}-{cleanBlobName}-{suffix}
-// This removes the kubernetes/ prefix and adds environment context
-func generateBlobKey(subscription, environment, blobName, suffix string) string {
-	// Remove kubernetes/ prefix if present
-	cleanBlobName := blobName
-	if strings.HasPrefix(blobName, "kubernetes/") {
-		cleanBlobName = strings.TrimPrefix(blobName, "kubernetes/")
-	}
-
-	return fmt.Sprintf("%s-%s-%s-%s", subscription, environment, cleanBlobName, suffix)
-}
-
-// publishBlobObservedEvent publishes a BlobObserved event to Kafka
-func (s *BlobMonitorService) publishBlobObservedEvent(event BlobObservedEvent) error {
+// Serializes and publishes individual blob discovery events to enable downstream processing
+func (s *BlobMonitorService) publishBlobObservedEvent(event events.BlobObservedEvent) error {
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal BlobObserved event: %w", err)
@@ -393,8 +423,8 @@ func (s *BlobMonitorService) publishBlobObservedEvent(event BlobObservedEvent) e
 	return s.kafkaProducer.Produce(message, nil)
 }
 
-// publishBlobsListedEvent publishes a BlobsListed completion event to Kafka
-func (s *BlobMonitorService) publishBlobsListedEvent(event BlobsListedEvent) error {
+// Publishes scan completion events with aggregated statistics for monitoring and debugging
+func (s *BlobMonitorService) publishBlobsListedEvent(event events.BlobsListedEvent) error {
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal BlobsListed event: %w", err)
@@ -414,7 +444,7 @@ func (s *BlobMonitorService) publishBlobsListedEvent(event BlobsListedEvent) err
 	return s.kafkaProducer.Produce(message, nil)
 }
 
-// handleKafkaDeliveryReports processes Kafka delivery confirmations
+// Monitors Kafka delivery confirmations to detect message publishing failures
 func (s *BlobMonitorService) handleKafkaDeliveryReports() {
 	for e := range s.kafkaProducer.Events() {
 		switch ev := e.(type) {
@@ -433,32 +463,26 @@ func (s *BlobMonitorService) handleKafkaDeliveryReports() {
 	}
 }
 
-// main function
-func main() {
-	if len(os.Args) < 2 {
-		log.Fatalf("Usage: %s <config-file>", os.Args[0])
+// Generates consistent Kafka message keys by normalizing blob paths and adding environment context
+// Removes kubernetes/ prefix to create cleaner keys while preserving uniqueness
+func generateBlobKey(subscription, environment, blobName, suffix string) string {
+	// Remove kubernetes/ prefix if present
+	cleanBlobName := blobName
+	if strings.HasPrefix(blobName, "kubernetes/") {
+		cleanBlobName = strings.TrimPrefix(blobName, "kubernetes/")
 	}
 
-	configPath := os.Args[1]
+	return fmt.Sprintf("%s-%s-%s-%s", subscription, environment, cleanBlobName, suffix)
+}
 
-	service, err := NewBlobMonitorService(configPath)
-	if err != nil {
-		log.Fatalf("❌ Failed to create blob monitor service: %v", err)
-	}
+// Test helper methods for integration testing
 
-	ctx := context.Background()
+// PublishBlobObservedEvent exposes blob event publishing for integration tests
+func (s *BlobMonitorService) PublishBlobObservedEvent(event events.BlobObservedEvent) error {
+	return s.publishBlobObservedEvent(event)
+}
 
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		sig := <-sigChan
-		log.Printf("🛑 Received signal %v, initiating graceful shutdown...", sig)
-		service.Stop()
-	}()
-
-	if err := service.Start(ctx); err != nil {
-		log.Fatalf("❌ Service failed: %v", err)
-	}
+// PublishBlobsListedEvent exposes completion event publishing for integration tests
+func (s *BlobMonitorService) PublishBlobsListedEvent(event events.BlobsListedEvent) error {
+	return s.publishBlobsListedEvent(event)
 }

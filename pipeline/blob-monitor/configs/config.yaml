@@ -1,0 +1,32 @@
+kafka:
+  brokers: "localhost:9092"
+  topic: "Ingestion.Blobs"
+  producer_config:
+    acks: "all"
+    retries: 3
+
+global:
+  polling_interval: 300  # 5 minutes
+  eod_overlap_minutes: 60  # 1 hour overlap
+  timezone: "UTC"
+
+date_range:
+  days_back: 3  # Look back 3 days
+  monitor_current_day: true
+
+environments:
+  - subscription: "cp2"
+    environment: "D1"
+    enabled: true
+    polling_interval: 600  # Override: 10 minutes for dev
+    selectors:
+      - "apache-proxy"
+      - "api-service"
+      - "zookeeper"
+
+storage:
+  container_name: "commerce-logs-separated"
+
+monitoring:
+  log_level: "info"
+  enable_metrics: true 

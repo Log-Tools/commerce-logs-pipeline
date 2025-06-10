@@ -28,9 +28,7 @@ __pycache__/
 *.pyo
 *.egg-info/
 
-# Local config files (keep examples)
-config.yaml
-!config.yaml.example
+
 
 # Go dependency vendoring (not needed with modules)
 vendor/
@@ -95,3 +93,5 @@ temp/
 workdir/ pipeline/blob-monitor/blob-monitor
 pipeline/ingest/ingest
 /ingest
+
+Progress.md

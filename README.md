@@ -149,6 +149,19 @@ list-blobs --max-per-env 10
 
 ## Development
 
+### Development Standards
+
+📖 **For all development work, please read [DEVELOPMENT.md](DEVELOPMENT.md) first.**
+
+This document defines:
+- Standard Go project structure for all modules
+- Testing strategies (unit vs integration)
+- Makefile standards and required targets
+- Code organization and naming conventions
+- Documentation requirements
+
+All new modules must follow these standards for consistency and maintainability.
+
 ### Go Modules
 
 Currently implemented modules:

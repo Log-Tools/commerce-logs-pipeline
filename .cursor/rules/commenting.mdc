@@ -1,0 +1,62 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Cursor Rules for Commenting
+
+## Comment Guidelines
+
+### DO NOT:
+- Repeat function names in comments (e.g., "TestSomething tests something" is redundant)
+- State the obvious from code structure (e.g., "This function returns a string" when return type is visible)
+- Add comments that just reword the function signature
+- Write comments that duplicate information already clear from the code
+- Use function names as the first word in function comments
+
+### DO:
+- Focus on WHY something is done, not WHAT is being done
+- Explain business logic, algorithms, or non-obvious behavior
+- Document assumptions, constraints, or edge cases
+- Provide context for complex operations
+- Use comments to explain the purpose or reasoning behind code decisions
+
+### Function Comments:
+- Start with a verb describing the purpose: "Validates...", "Processes...", "Converts..."
+- For test functions, start with "Verifies...", "Ensures...", "Validates..."
+- Skip obvious comments entirely if the function name is self-explanatory
+
+### Examples:
+
+**BAD:**
+```go
+// TestUserLogin tests user login functionality
+func TestUserLogin(t *testing.T) {}
+
+// GetUserName gets the user name
+func GetUserName() string {}
+```
+
+**GOOD:**
+```go
+// Verifies authentication flow handles invalid credentials correctly
+func TestUserLogin(t *testing.T) {}
+
+// Extracts username from JWT token claims
+func GetUserName() string {}
+
+// No comment needed - function name is self-explanatory
+func IsValidEmail(email string) bool {}
+```
+
+### Code Comments:
+- Explain complex business rules or algorithms
+- Document why specific values or approaches were chosen
+- Clarify non-obvious side effects or dependencies
+- Add context for future maintainers
+
+### When to Skip Comments:
+- Self-documenting code with clear names
+- Simple getters/setters
+- Obvious operations or transformations
+- Standard patterns that follow established conventions 
