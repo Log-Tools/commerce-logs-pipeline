@@ -5,5 +5,7 @@ toolchain go1.23.10
 use (
 	./pipeline/blob-monitor
 	./pipeline/config
+	./pipeline/events
 	./pipeline/ingest
+	./tools/kafka-init
 )

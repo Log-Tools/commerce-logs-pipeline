@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
@@ -15,6 +13,7 @@ import (
 	blobConfig "github.com/Log-Tools/commerce-logs-pipeline/pipeline/blob-monitor/internal/config"
 	"github.com/Log-Tools/commerce-logs-pipeline/pipeline/blob-monitor/internal/events"
 	"github.com/Log-Tools/commerce-logs-pipeline/pipeline/blob-monitor/internal/selectors"
+	sharedEvents "github.com/Log-Tools/commerce-logs-pipeline/pipeline/events"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
@@ -84,27 +83,15 @@ func (f *MockStorageClientFactory) CreateClients(cfg *blobConfig.Config) (map[st
 	return make(map[string]*azblob.Client), nil
 }
 
-// BlobTracker tracks blob metadata for closing detection
-type BlobTracker struct {
-	Subscription    string
-	Environment     string
-	BlobName        string
-	LastModified    time.Time
-	LastChecked     time.Time
-	SizeInBytes     int64
-	ServiceSelector string
-	IsClosed        bool
-}
-
 // Orchestrates blob monitoring across multiple environments with configurable selectors
 type BlobMonitorService struct {
-	config         *blobConfig.Config
-	storageClients map[string]*azblob.Client // subscription+env -> client
-	kafkaProducer  Producer
-	selectors      map[string]*selectors.BlobSelector
-	blobTrackers   map[string]*BlobTracker // blob key -> tracker
-	mu             sync.RWMutex
-	stopChannel    chan struct{}
+	config               *blobConfig.Config
+	storageClients       map[string]*azblob.Client // subscription+env -> client
+	kafkaProducer        Producer
+	selectors            map[string]*selectors.BlobSelector
+	blobClosingProcessor *BlobClosingProcessor
+	blobStateProcessor   *BlobStateProcessor
+	stopChannel          chan struct{}
 }
 
 // Constructs service instance from configuration file path for simple deployment scenarios
@@ -148,74 +135,97 @@ func NewBlobMonitorService(cfg *blobConfig.Config, producer Producer, storageFac
 		return nil, fmt.Errorf("failed to create storage clients: %w", err)
 	}
 
+	// Create blob state processor
+	blobStateProcessor, err := NewBlobStateProcessor(cfg, producer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create blob state processor: %w", err)
+	}
+
 	service := &BlobMonitorService{
-		config:         cfg,
-		storageClients: storageClients,
-		kafkaProducer:  producer,
-		selectors:      selectors.GetBlobSelectors(),
-		blobTrackers:   make(map[string]*BlobTracker),
-		stopChannel:    make(chan struct{}),
+		config:               cfg,
+		storageClients:       storageClients,
+		kafkaProducer:        producer,
+		selectors:            selectors.GetBlobSelectors(),
+		blobClosingProcessor: NewBlobClosingProcessor(cfg, producer),
+		blobStateProcessor:   blobStateProcessor,
+		stopChannel:          make(chan struct{}),
 	}
 
 	return service, nil
 }
 
 // Initiates blob monitoring workflows based on configuration requirements
-func (s *BlobMonitorService) Start(ctx context.Context) error {
+func (blobMonitorService *BlobMonitorService) Start(ctx context.Context) error {
 	log.Printf("🚀 Starting Blob Monitor Service")
-	log.Printf("📡 Kafka: %s -> %s", s.config.Kafka.Brokers, s.config.Kafka.Topic)
-	log.Printf("🌍 Monitoring %d environments", len(s.config.Environments))
+	log.Printf("📡 Kafka: %s -> %s", blobMonitorService.config.Kafka.Brokers, blobMonitorService.config.Kafka.Topic)
+	log.Printf("🌍 Monitoring %d environments", len(blobMonitorService.config.Environments))
 
 	// Start Kafka delivery report handler
-	go s.handleKafkaDeliveryReports()
+	go blobMonitorService.handleKafkaDeliveryReports()
 
-	// Start blob closing detection if enabled
-	if s.config.Global.BlobClosingConfig.Enabled {
-		log.Printf("🔐 Starting blob closing detection (timeout: %d minutes)",
-			s.config.Global.BlobClosingConfig.TimeoutMinutes)
-		go s.checkClosedBlobs(ctx)
+	// Start blob closing processor in separate goroutine if enabled
+	if blobMonitorService.config.Global.BlobClosingConfig.Enabled {
+		log.Printf("🔐 Blob closing detection enabled (timeout: %d minutes, event-driven)",
+			blobMonitorService.config.Global.BlobClosingConfig.TimeoutMinutes)
+		go blobMonitorService.blobClosingProcessor.Start(ctx)
 	}
 
+	// Start blob state processor in separate goroutine
+	log.Printf("🗂️ Starting blob state processor for compacted state tracking")
+	go func() {
+		if err := blobMonitorService.blobStateProcessor.Start(ctx); err != nil {
+			log.Printf("❌ Blob state processor error: %v", err)
+		}
+	}()
+
 	// Perform historical scan first
-	if err := s.performHistoricalScan(ctx); err != nil {
+	if err := blobMonitorService.performHistoricalScan(ctx); err != nil {
 		log.Printf("❌ Historical scan failed: %v", err)
-		if !s.config.ErrorHandling.ContinueOnEnvironmentError {
+		if !blobMonitorService.config.ErrorHandling.ContinueOnEnvironmentError {
 			return fmt.Errorf("historical scan failed: %w", err)
 		}
 	}
 
 	// Start current day monitoring if enabled
-	if s.config.DateRange.MonitorCurrentDay {
+	if blobMonitorService.config.DateRange.MonitorCurrentDay {
 		log.Printf("📈 Starting current day monitoring...")
-		s.startCurrentDayMonitoring(ctx)
+		blobMonitorService.startCurrentDayMonitoring(ctx)
 	}
 
 	// Wait for stop signal
-	<-s.stopChannel
+	<-blobMonitorService.stopChannel
 	log.Printf("🛑 Blob monitor service stopped")
 	return nil
 }
 
 // Coordinates graceful shutdown to prevent data loss and connection leaks
-func (s *BlobMonitorService) Stop() {
+func (blobMonitorService *BlobMonitorService) Stop() {
 	log.Printf("🔄 Stopping blob monitor service...")
-	close(s.stopChannel)
+	close(blobMonitorService.stopChannel)
+
+	// Stop blob closing processor if enabled
+	if blobMonitorService.config.Global.BlobClosingConfig.Enabled {
+		blobMonitorService.blobClosingProcessor.Stop()
+	}
+
+	// Stop blob state processor
+	blobMonitorService.blobStateProcessor.Stop()
 
 	// Flush and close Kafka producer
-	s.kafkaProducer.Flush(30 * 1000) // 30 second timeout
-	s.kafkaProducer.Close()
+	blobMonitorService.kafkaProducer.Flush(30 * 1000) // 30 second timeout
+	blobMonitorService.kafkaProducer.Close()
 }
 
 // Processes historical date range to catch up on missed blobs before real-time monitoring
-func (s *BlobMonitorService) performHistoricalScan(ctx context.Context) error {
+func (blobMonitorService *BlobMonitorService) performHistoricalScan(ctx context.Context) error {
 	log.Printf("🔍 Starting historical blob scan...")
 
-	startDate, err := s.config.GetStartDate()
+	startDate, err := blobMonitorService.config.GetStartDate()
 	if err != nil {
 		return fmt.Errorf("failed to get start date: %w", err)
 	}
 
-	location, err := time.LoadLocation(s.config.Global.Timezone)
+	location, err := time.LoadLocation(blobMonitorService.config.Global.Timezone)
 	if err != nil {
 		return fmt.Errorf("invalid timezone: %w", err)
 	}
@@ -232,16 +242,16 @@ func (s *BlobMonitorService) performHistoricalScan(ctx context.Context) error {
 
 		log.Printf("📅 Scanning date: %s", dateStr)
 
-		for _, env := range s.config.Environments {
+		for _, env := range blobMonitorService.config.Environments {
 			if !env.Enabled {
 				continue
 			}
 
-			if err := s.scanEnvironmentForDate(ctx, env, dateStr); err != nil {
+			if err := blobMonitorService.scanEnvironmentForDate(ctx, env, dateStr); err != nil {
 				log.Printf("❌ Failed to scan %s/%s for %s: %v",
 					env.Subscription, env.Environment, dateStr, err)
 
-				if !s.config.ErrorHandling.ContinueOnEnvironmentError {
+				if !blobMonitorService.config.ErrorHandling.ContinueOnEnvironmentError {
 					return fmt.Errorf("environment scan failed: %w", err)
 				}
 			}
@@ -253,20 +263,20 @@ func (s *BlobMonitorService) performHistoricalScan(ctx context.Context) error {
 }
 
 // Launches concurrent monitoring goroutines for real-time blob detection
-func (s *BlobMonitorService) startCurrentDayMonitoring(ctx context.Context) {
+func (blobMonitorService *BlobMonitorService) startCurrentDayMonitoring(ctx context.Context) {
 	// Start monitoring goroutines for each environment
-	for _, env := range s.config.Environments {
+	for _, env := range blobMonitorService.config.Environments {
 		if !env.Enabled {
 			continue
 		}
 
-		go s.monitorEnvironment(ctx, env)
+		go blobMonitorService.monitorEnvironment(ctx, env)
 	}
 }
 
 // Maintains persistent monitoring loop for a single environment with configurable intervals
-func (s *BlobMonitorService) monitorEnvironment(ctx context.Context, env blobConfig.EnvironmentConfig) {
-	pollingInterval := time.Duration(env.GetPollingInterval(s.config.Global.PollingInterval)) * time.Second
+func (blobMonitorService *BlobMonitorService) monitorEnvironment(ctx context.Context, env blobConfig.EnvironmentConfig) {
+	pollingInterval := time.Duration(env.GetPollingInterval(blobMonitorService.config.Global.PollingInterval)) * time.Second
 	ticker := time.NewTicker(pollingInterval)
 	defer ticker.Stop()
 
@@ -277,11 +287,11 @@ func (s *BlobMonitorService) monitorEnvironment(ctx context.Context, env blobCon
 		case <-ctx.Done():
 			log.Printf("📡 Stopped monitoring %s/%s due to context cancellation", env.Subscription, env.Environment)
 			return
-		case <-s.stopChannel:
+		case <-blobMonitorService.stopChannel:
 			log.Printf("📡 Stopped monitoring %s/%s due to service shutdown", env.Subscription, env.Environment)
 			return
 		case <-ticker.C:
-			if err := s.performCurrentDayMonitoring(ctx, env); err != nil {
+			if err := blobMonitorService.performCurrentDayMonitoring(ctx, env); err != nil {
 				log.Printf("❌ Current day monitoring failed for %s/%s: %v", env.Subscription, env.Environment, err)
 			}
 		}
@@ -289,8 +299,8 @@ func (s *BlobMonitorService) monitorEnvironment(ctx context.Context, env blobCon
 }
 
 // Handles current day scanning with end-of-day overlap period to catch cross-midnight blobs
-func (s *BlobMonitorService) performCurrentDayMonitoring(ctx context.Context, env blobConfig.EnvironmentConfig) error {
-	location, err := time.LoadLocation(s.config.Global.Timezone)
+func (blobMonitorService *BlobMonitorService) performCurrentDayMonitoring(ctx context.Context, env blobConfig.EnvironmentConfig) error {
+	location, err := time.LoadLocation(blobMonitorService.config.Global.Timezone)
 	if err != nil {
 		return fmt.Errorf("invalid timezone: %w", err)
 	}
@@ -299,17 +309,17 @@ func (s *BlobMonitorService) performCurrentDayMonitoring(ctx context.Context, en
 	currentDate := now.Format("20060102")
 
 	// Always scan current day
-	if err := s.scanEnvironmentForDate(ctx, env, currentDate); err != nil {
+	if err := blobMonitorService.scanEnvironmentForDate(ctx, env, currentDate); err != nil {
 		return fmt.Errorf("failed to scan current day: %w", err)
 	}
 
 	// Check if we're in EOD overlap period and scan previous day too
-	inOverlap, err := s.config.IsInEODOverlapPeriod()
+	inOverlap, err := blobMonitorService.config.IsInEODOverlapPeriod()
 	if err != nil {
 		log.Printf("⚠️ Failed to check EOD overlap period: %v", err)
 	} else if inOverlap {
 		previousDate := now.AddDate(0, 0, -1).Format("20060102")
-		if err := s.scanEnvironmentForDate(ctx, env, previousDate); err != nil {
+		if err := blobMonitorService.scanEnvironmentForDate(ctx, env, previousDate); err != nil {
 			log.Printf("⚠️ Failed to scan previous day during EOD overlap: %v", err)
 		}
 	}
@@ -318,9 +328,9 @@ func (s *BlobMonitorService) performCurrentDayMonitoring(ctx context.Context, en
 }
 
 // Orchestrates blob discovery across all configured selectors for a given environment and date
-func (s *BlobMonitorService) scanEnvironmentForDate(ctx context.Context, env blobConfig.EnvironmentConfig, date string) error {
+func (blobMonitorService *BlobMonitorService) scanEnvironmentForDate(ctx context.Context, env blobConfig.EnvironmentConfig, date string) error {
 	clientKey := fmt.Sprintf("%s-%s", env.Subscription, env.Environment)
-	client, exists := s.storageClients[clientKey]
+	client, exists := blobMonitorService.storageClients[clientKey]
 	if !exists {
 		return fmt.Errorf("no Azure client for %s/%s", env.Subscription, env.Environment)
 	}
@@ -332,11 +342,11 @@ func (s *BlobMonitorService) scanEnvironmentForDate(ctx context.Context, env blo
 			return fmt.Errorf("failed to get selector %s: %w", selectorName, err)
 		}
 
-		if err := s.scanSelectorForDate(ctx, client, env, selector, date); err != nil {
+		if err := blobMonitorService.scanSelectorForDate(ctx, client, env, selector, date); err != nil {
 			log.Printf("❌ Failed to scan selector %s for %s/%s on %s: %v",
 				selectorName, env.Subscription, env.Environment, date, err)
 
-			if !s.config.ErrorHandling.ContinueOnEnvironmentError {
+			if !blobMonitorService.config.ErrorHandling.ContinueOnEnvironmentError {
 				return err
 			}
 		}
@@ -346,17 +356,17 @@ func (s *BlobMonitorService) scanEnvironmentForDate(ctx context.Context, env blo
 }
 
 // Executes Azure blob listing and publishes discovered blobs with precise timing metadata
-func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *azblob.Client,
+func (blobMonitorService *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *azblob.Client,
 	env blobConfig.EnvironmentConfig, selector *selectors.BlobSelector, date string) error {
 
 	// Capture listing start time BEFORE making the request (critical for consistency)
-	listingStartTime := time.Now()
+	listingStartTime := time.Now().UTC()
 
 	log.Printf("🔍 Scanning %s/%s for %s on %s", env.Subscription, env.Environment, selector.Name, date)
 
 	// List blobs with date prefix
 	prefix := selector.GetDatePrefix(date)
-	containerClient := client.ServiceClient().NewContainerClient(s.config.Storage.ContainerName)
+	containerClient := client.ServiceClient().NewContainerClient(blobMonitorService.config.Storage.ContainerName)
 
 	pager := containerClient.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
 		Prefix: &prefix,
@@ -382,7 +392,7 @@ func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *az
 		}
 	}
 
-	listingEndTime := time.Now()
+	listingEndTime := time.Now().UTC()
 
 	log.Printf("📦 Found %d %s blobs for %s/%s on %s (%.2f MB)",
 		len(foundBlobs), selector.Name, env.Subscription, env.Environment, date,
@@ -394,19 +404,24 @@ func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *az
 			Subscription:     env.Subscription,
 			Environment:      env.Environment,
 			BlobName:         *blob.Name,
-			ObservationDate:  time.Now(),
+			ObservationDate:  time.Now().UTC(),
 			SizeInBytes:      *blob.Properties.ContentLength,
 			LastModifiedDate: *blob.Properties.LastModified,
 			ServiceSelector:  selector.Name,
 		}
 
-		if err := s.publishBlobObservedEvent(event); err != nil {
+		// Add creation time if available
+		if blob.Properties.CreationTime != nil {
+			event.CreationDate = *blob.Properties.CreationTime
+		}
+
+		if err := blobMonitorService.publishBlobObservedEvent(event); err != nil {
 			log.Printf("❌ Failed to publish BlobObserved event for %s: %v", *blob.Name, err)
 		}
 
 		// Track blob for closing detection if enabled
-		if s.config.Global.BlobClosingConfig.Enabled {
-			s.trackBlob(event)
+		if blobMonitorService.config.Global.BlobClosingConfig.Enabled {
+			blobMonitorService.blobClosingProcessor.ProcessBlobObserved(event)
 		}
 	}
 
@@ -422,7 +437,7 @@ func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *az
 		TotalBytes:       totalBytes,
 	}
 
-	if err := s.publishBlobsListedEvent(completionEvent); err != nil {
+	if err := blobMonitorService.publishBlobsListedEvent(completionEvent); err != nil {
 		return fmt.Errorf("failed to publish BlobsListed event: %w", err)
 	}
 
@@ -430,55 +445,54 @@ func (s *BlobMonitorService) scanSelectorForDate(ctx context.Context, client *az
 }
 
 // Serializes and publishes individual blob discovery events to enable downstream processing
-func (s *BlobMonitorService) publishBlobObservedEvent(event events.BlobObservedEvent) error {
+func (blobMonitorService *BlobMonitorService) publishBlobObservedEvent(event events.BlobObservedEvent) error {
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal BlobObserved event: %w", err)
 	}
 
-	key := generateBlobKey(event.Subscription, event.Environment, event.BlobName, "observed")
+	key := sharedEvents.GenerateBlobEventKey(event.Subscription, event.Environment, "observed", event.BlobName)
 
 	message := &kafka.Message{
 		TopicPartition: kafka.TopicPartition{
-			Topic: &s.config.Kafka.Topic,
+			Topic: &blobMonitorService.config.Kafka.Topic,
 		},
 		Key:   []byte(key),
 		Value: eventJSON,
 	}
 
-	return s.kafkaProducer.Produce(message, nil)
+	return blobMonitorService.kafkaProducer.Produce(message, nil)
 }
 
 // Publishes scan completion events with aggregated statistics for monitoring and debugging
-func (s *BlobMonitorService) publishBlobsListedEvent(event events.BlobsListedEvent) error {
+func (blobMonitorService *BlobMonitorService) publishBlobsListedEvent(event events.BlobsListedEvent) error {
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal BlobsListed event: %w", err)
 	}
 
-	key := fmt.Sprintf("%s-%s-%s-%s-listed",
-		event.Subscription, event.Environment, event.ServiceSelector, event.Date)
+	key := sharedEvents.GenerateBlobEventKey(event.Subscription, event.Environment, "listed", fmt.Sprintf("%s-%s", event.ServiceSelector, event.Date))
 
 	message := &kafka.Message{
 		TopicPartition: kafka.TopicPartition{
-			Topic: &s.config.Kafka.Topic,
+			Topic: &blobMonitorService.config.Kafka.Topic,
 		},
 		Key:   []byte(key),
 		Value: eventJSON,
 	}
 
-	return s.kafkaProducer.Produce(message, nil)
+	return blobMonitorService.kafkaProducer.Produce(message, nil)
 }
 
 // Monitors Kafka delivery confirmations to detect message publishing failures
-func (s *BlobMonitorService) handleKafkaDeliveryReports() {
-	for e := range s.kafkaProducer.Events() {
+func (blobMonitorService *BlobMonitorService) handleKafkaDeliveryReports() {
+	for e := range blobMonitorService.kafkaProducer.Events() {
 		switch ev := e.(type) {
 		case *kafka.Message:
 			if ev.TopicPartition.Error != nil {
 				log.Printf("❌ Kafka delivery failed for key %s: %v",
 					string(ev.Key), ev.TopicPartition.Error)
-			} else if s.config.Monitoring.LogLevel == "debug" {
+			} else if blobMonitorService.config.Monitoring.LogLevel == "debug" {
 				log.Printf("✅ Kafka delivery successful for key %s to %s[%d]@%v",
 					string(ev.Key), *ev.TopicPartition.Topic,
 					ev.TopicPartition.Partition, ev.TopicPartition.Offset)
@@ -489,163 +503,19 @@ func (s *BlobMonitorService) handleKafkaDeliveryReports() {
 	}
 }
 
-// Generates consistent Kafka message keys by normalizing blob paths and adding environment context
-// Removes kubernetes/ prefix to create cleaner keys while preserving uniqueness
-func generateBlobKey(subscription, environment, blobName, suffix string) string {
-	// Remove kubernetes/ prefix if present
-	cleanBlobName := blobName
-	if strings.HasPrefix(blobName, "kubernetes/") {
-		cleanBlobName = strings.TrimPrefix(blobName, "kubernetes/")
-	}
-
-	return fmt.Sprintf("%s-%s-%s-%s", subscription, environment, cleanBlobName, suffix)
-}
-
 // Test helper methods for integration testing
 
 // PublishBlobObservedEvent exposes blob event publishing for integration tests
-func (s *BlobMonitorService) PublishBlobObservedEvent(event events.BlobObservedEvent) error {
-	return s.publishBlobObservedEvent(event)
+func (blobMonitorService *BlobMonitorService) PublishBlobObservedEvent(event events.BlobObservedEvent) error {
+	return blobMonitorService.publishBlobObservedEvent(event)
 }
 
 // PublishBlobsListedEvent exposes completion event publishing for integration tests
-func (s *BlobMonitorService) PublishBlobsListedEvent(event events.BlobsListedEvent) error {
-	return s.publishBlobsListedEvent(event)
+func (blobMonitorService *BlobMonitorService) PublishBlobsListedEvent(event events.BlobsListedEvent) error {
+	return blobMonitorService.publishBlobsListedEvent(event)
 }
 
 // PublishBlobClosedEvent exposes blob closed event publishing for integration tests
-func (s *BlobMonitorService) PublishBlobClosedEvent(event events.BlobClosedEvent) error {
-	return s.publishBlobClosedEvent(event)
-}
-
-// Tracks blob metadata for closing detection
-func (s *BlobMonitorService) trackBlob(event events.BlobObservedEvent) {
-	// Skip tracking if blob closing is disabled
-	if !s.config.Global.BlobClosingConfig.Enabled {
-		return
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	blobKey := generateBlobKey(event.Subscription, event.Environment, event.BlobName, "tracker")
-
-	now := time.Now()
-	existing, exists := s.blobTrackers[blobKey]
-
-	if exists {
-		// Update existing tracker if blob was modified
-		if event.LastModifiedDate.After(existing.LastModified) {
-			existing.LastModified = event.LastModifiedDate
-			existing.SizeInBytes = event.SizeInBytes
-			existing.IsClosed = false // Reset closed status if blob was modified
-		}
-		existing.LastChecked = now
-	} else {
-		// Create new tracker
-		s.blobTrackers[blobKey] = &BlobTracker{
-			Subscription:    event.Subscription,
-			Environment:     event.Environment,
-			BlobName:        event.BlobName,
-			LastModified:    event.LastModifiedDate,
-			LastChecked:     now,
-			SizeInBytes:     event.SizeInBytes,
-			ServiceSelector: event.ServiceSelector,
-			IsClosed:        false,
-		}
-	}
-}
-
-// Periodically checks for blobs that should be considered closed
-func (s *BlobMonitorService) checkClosedBlobs(ctx context.Context) {
-	timeout := time.Duration(s.config.Global.BlobClosingConfig.TimeoutMinutes) * time.Minute
-
-	// Check every minute for closed blobs (could be configurable in the future)
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	log.Printf("🔐 Blob closing detector started (checking every minute)")
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("🔐 Blob closing detector stopped due to context cancellation")
-			return
-		case <-s.stopChannel:
-			log.Printf("🔐 Blob closing detector stopped")
-			return
-		case <-ticker.C:
-			s.detectClosedBlobs(timeout)
-		}
-	}
-}
-
-// Detects and publishes events for blobs that have exceeded the closing timeout
-func (s *BlobMonitorService) detectClosedBlobs(timeout time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now()
-	var closedBlobs []string
-
-	for blobKey, tracker := range s.blobTrackers {
-		if tracker.IsClosed {
-			continue // Already marked as closed
-		}
-
-		// Check if blob has been inactive for the timeout period
-		if now.Sub(tracker.LastModified) >= timeout {
-			tracker.IsClosed = true
-			closedBlobs = append(closedBlobs, blobKey)
-
-			event := events.BlobClosedEvent{
-				Subscription:     tracker.Subscription,
-				Environment:      tracker.Environment,
-				BlobName:         tracker.BlobName,
-				ServiceSelector:  tracker.ServiceSelector,
-				LastModifiedDate: tracker.LastModified,
-				ClosedDate:       now,
-				SizeInBytes:      tracker.SizeInBytes,
-				TimeoutMinutes:   s.config.Global.BlobClosingConfig.TimeoutMinutes,
-			}
-
-			if err := s.publishBlobClosedEvent(event); err != nil {
-				log.Printf("❌ Failed to publish BlobClosed event for %s: %v", tracker.BlobName, err)
-			} else {
-				log.Printf("🔐 Blob closed: %s (inactive for %v)", tracker.BlobName, timeout)
-			}
-		}
-	}
-
-	// Clean up old closed blobs (keep for 24 hours after closing)
-	cleanupThreshold := now.Add(-24 * time.Hour)
-	for blobKey, tracker := range s.blobTrackers {
-		if tracker.IsClosed && tracker.LastChecked.Before(cleanupThreshold) {
-			delete(s.blobTrackers, blobKey)
-		}
-	}
-
-	if len(closedBlobs) > 0 {
-		log.Printf("🔐 Detected %d newly closed blobs", len(closedBlobs))
-	}
-}
-
-// Publishes blob closed events to notify downstream consumers
-func (s *BlobMonitorService) publishBlobClosedEvent(event events.BlobClosedEvent) error {
-	eventJSON, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("failed to marshal BlobClosed event: %w", err)
-	}
-
-	key := generateBlobKey(event.Subscription, event.Environment, event.BlobName, "closed")
-
-	message := &kafka.Message{
-		TopicPartition: kafka.TopicPartition{
-			Topic: &s.config.Kafka.Topic,
-		},
-		Key:   []byte(key),
-		Value: eventJSON,
-	}
-
-	return s.kafkaProducer.Produce(message, nil)
+func (blobMonitorService *BlobMonitorService) PublishBlobClosedEvent(event events.BlobClosedEvent) error {
+	return blobMonitorService.blobClosingProcessor.publishBlobClosedEvent(event)
 }

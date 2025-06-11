@@ -6,7 +6,8 @@ toolchain go1.23.10
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.1
-	github.com/Log-Tools/commerce-logs-pipeline/config v0.0.0-00010101000000-000000000000
+	github.com/Log-Tools/commerce-logs-pipeline/config v1.0.0
+	github.com/Log-Tools/commerce-logs-pipeline/pipeline/events v1.0.0
 	github.com/confluentinc/confluent-kafka-go/v2 v2.10.0
 	github.com/stretchr/testify v1.10.0
 	github.com/testcontainers/testcontainers-go v0.33.0
@@ -69,3 +70,5 @@ require (
 )
 
 replace github.com/Log-Tools/commerce-logs-pipeline/config => ../config
+
+replace github.com/Log-Tools/commerce-logs-pipeline/pipeline/events => ../events

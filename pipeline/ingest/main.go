@@ -10,47 +10,17 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Log-Tools/commerce-logs-pipeline/config"
+	"github.com/Log-Tools/commerce-logs-pipeline/pipeline/events"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
-// generateBlobKey creates a standardized key for blob events
-// Format: {subscription}-{environment}-{cleanBlobName}-{suffix}
-// This removes the kubernetes/ prefix and adds environment context
-func generateBlobKey(subscription, environment, blobName, suffix string) string {
-	// Remove kubernetes/ prefix if present
-	cleanBlobName := blobName
-	if strings.HasPrefix(blobName, "kubernetes/") {
-		cleanBlobName = strings.TrimPrefix(blobName, "kubernetes/")
-	}
-
-	return fmt.Sprintf("%s-%s-%s-%s", subscription, environment, cleanBlobName, suffix)
-}
-
-// KafkaCompletionMessage defines the structure for the final completion event.
-// The ProcessedToEndOffset indicates the byte offset in the blob up to which
-// processing has been successfully completed for this run. For a full segment process,
-// this will be the total size of the blob at the time of processing.
-type KafkaCompletionMessage struct {
-	BlobName             string `json:"blobName"`
-	ProcessedFromOffset  int64  `json:"processedFromOffset"`
-	ProcessedToEndOffset int64  `json:"processedToEndOffset"`
-	LinesSent            int    `json:"linesSent"`
-}
-
-type BlobObservedMessage struct {
-	Subscription     string    `json:"subscription"`
-	Environment      string    `json:"environment"`
-	BlobName         string    `json:"blobName"`
-	ObservationDate  time.Time `json:"observationDate"`
-	SizeInBytes      int64     `json:"sizeInBytes"`
-	LastModifiedDate time.Time `json:"lastModifiedDate"`
-}
+// Use shared event types from the events package
+// Legacy types removed - now using events.BlobCompletionEvent and events.BlobObservedEvent
 
 // ProcessBlobSegmentToKafka downloads a gzipped blob segment from Azure, ungzips it,
 // and sends its lines to a Kafka topic. A final completion message is sent
@@ -185,7 +155,7 @@ func ProcessBlobSegmentToKafka(
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineCounter++
-		kafkaKey := generateBlobKey(subscriptionID, environment, azureBlobName, fmt.Sprintf("line-%d", lineCounter))
+		kafkaKey := events.GenerateBlobEventKey(subscriptionID, environment, fmt.Sprintf("line-%d", lineCounter), azureBlobName)
 		message := &kafka.Message{
 			TopicPartition: kafka.TopicPartition{Topic: &kafkaTopic, Partition: -1},
 			Key:            []byte(kafkaKey),
@@ -244,11 +214,14 @@ func sendCompletionMessage(
 	existingProducer *kafka.Producer,
 	existingDeliveryChan chan kafka.Event,
 ) error {
-	completionMsg := KafkaCompletionMessage{
+	completionMsg := events.BlobCompletionEvent{
 		BlobName:             blobName,
 		ProcessedFromOffset:  processedFromOffset,
 		ProcessedToEndOffset: processedToEndOffset, // Use the new field name
 		LinesSent:            linesSentInSegment,
+		Subscription:         subscription,
+		Environment:          environment,
+		ProcessedDate:        time.Now().UTC(),
 	}
 	completionMsgJSON, err := json.Marshal(completionMsg)
 	if err != nil {
@@ -256,7 +229,7 @@ func sendCompletionMessage(
 	}
 
 	// Key uses ProcessedFromOffset to identify the segment this completion message belongs to.
-	kafkaKeyCompletion := generateBlobKey(subscription, environment, blobName, fmt.Sprintf("offset%d-completion", processedFromOffset))
+	kafkaKeyCompletion := events.GenerateBlobEventKey(subscription, environment, fmt.Sprintf("offset%d-completion", processedFromOffset), blobName)
 	kafkaMessageCompletion := &kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &kafkaTopic, Partition: -1},
 		Key:            []byte(kafkaKeyCompletion),
@@ -326,22 +299,24 @@ func sendBlobObservedMessage(
 	existingProducer *kafka.Producer,
 	existingDeliveryChan chan kafka.Event,
 ) error {
-	blobObservedMsg := BlobObservedMessage{
+	blobObservedMsg := events.BlobObservedEvent{
 		Subscription:     subscription,
 		Environment:      environment,
 		BlobName:         blobName,
-		ObservationDate:  time.Now(),
+		ObservationDate:  time.Now().UTC(),
 		SizeInBytes:      sizeInBytes,
 		LastModifiedDate: lastModifiedDate,
+		// CreationDate left unset - ingest pipeline doesn't have access to real creation time
+		ServiceSelector: "ingest-pipeline", // Mark as coming from ingest pipeline
 	}
 	blobObservedMsgJSON, err := json.Marshal(blobObservedMsg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal blob observed message for %s: %w", blobName, err)
 	}
 
-	kafkaKeyObserved := generateBlobKey(subscription, environment, blobName, "observed")
+	kafkaKeyObserved := events.GenerateBlobEventKey(subscription, environment, "observed", blobName)
 	kafkaMessageObserved := &kafka.Message{
-		TopicPartition: kafka.TopicPartition{Topic: &[]string{"Ingestion.Blobs"}[0], Partition: -1},
+		TopicPartition: kafka.TopicPartition{Topic: &[]string{events.TopicBlobs}[0], Partition: -1},
 		Key:            []byte(kafkaKeyObserved),
 		Value:          blobObservedMsgJSON,
 	}
@@ -379,7 +354,7 @@ func sendBlobObservedMessage(
 		deliveryChan = tempDeliveryChan
 	}
 
-	log.Printf("Producing blob observed message for %s to Kafka topic Ingestion.Blobs: %s", blobName, string(blobObservedMsgJSON))
+	log.Printf("Producing blob observed message for %s to Kafka topic %s: %s", blobName, events.TopicBlobs, string(blobObservedMsgJSON))
 	err = p.Produce(kafkaMessageObserved, deliveryChan)
 	if err != nil {
 		return fmt.Errorf("failed to enqueue blob observed message (key: %s): %w", kafkaKeyObserved, err)

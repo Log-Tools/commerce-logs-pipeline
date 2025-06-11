@@ -1,0 +1,12 @@
+topics:
+  Ingestion.Blobs:
+    partitions: 1
+    cleanup.policy: delete
+  Ingestion.BlobState:
+    partitions: 1
+    cleanup.policy: compact
+    segment.ms: 60000          # 1-minute segments in dev for quick compaction
+    min.cleanable.dirty.ratio: 0.01
+  Ingestion.RawLogs:
+    partitions: 1
+    cleanup.policy: delete 

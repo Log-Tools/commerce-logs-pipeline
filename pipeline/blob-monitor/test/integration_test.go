@@ -195,7 +195,7 @@ func (suite *BlobMonitorIntegrationSuite) TestBlobObservedEventPublishing() {
 	assert.Equal(suite.T(), testEvent.ServiceSelector, receivedEvent.ServiceSelector)
 
 	// Verify key format
-	expectedKey := "test-sub-test-env-20250607.apache2-igc_proxy-test.gz-observed"
+	expectedKey := "test-sub:test-env:observed:20250607.apache2-igc_proxy-test.gz"
 	assert.Equal(suite.T(), expectedKey, string(message.Key))
 
 	suite.T().Log("✅ BlobObserved event publishing test passed")

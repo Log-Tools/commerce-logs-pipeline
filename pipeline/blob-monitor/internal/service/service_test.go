@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -64,6 +65,45 @@ func (m *MockProducer) GetProducedMessages() []MockMessage {
 	return m.messages
 }
 
+// MockConsumer is a simple mock for testing
+type MockConsumer struct {
+	messages []*kafka.Message
+	index    int
+}
+
+func NewMockConsumer() *MockConsumer {
+	return &MockConsumer{
+		messages: make([]*kafka.Message, 0),
+		index:    0,
+	}
+}
+
+func (m *MockConsumer) Subscribe(topic string, rebalanceCb kafka.RebalanceCb) error {
+	return nil
+}
+
+func (m *MockConsumer) ReadMessage(timeout time.Duration) (*kafka.Message, error) {
+	if m.index >= len(m.messages) {
+		return nil, kafka.NewError(kafka.ErrTimedOut, "No more messages", false)
+	}
+
+	msg := m.messages[m.index]
+	m.index++
+	return msg, nil
+}
+
+func (m *MockConsumer) Close() error {
+	return nil
+}
+
+func (m *MockConsumer) AddMessage(topic string, key []byte, value []byte) {
+	m.messages = append(m.messages, &kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic},
+		Key:            key,
+		Value:          value,
+	})
+}
+
 // Validates service initialization correctly wires dependencies and internal state
 func TestNewBlobMonitorService(t *testing.T) {
 	config := createTestConfig()
@@ -109,8 +149,8 @@ func TestPublishBlobObservedEvent(t *testing.T) {
 
 	msg := messages[0]
 	assert.Equal(t, "test-topic", msg.Topic)
-	// Verify key format follows pattern: {subscription}-{environment}-{cleanBlobName}-observed
-	assert.Equal(t, "test-sub-test-env-20250607.apache2-igc_proxy-test.gz-observed", string(msg.Key))
+	// Verify key format follows pattern: {subscription}:{environment}:{eventType}:{cleanBlobName}
+	assert.Equal(t, "test-sub:test-env:observed:20250607.apache2-igc_proxy-test.gz", string(msg.Key))
 	// Verify critical fields are present in JSON payload
 	assert.Contains(t, string(msg.Value), "test-sub")
 	assert.Contains(t, string(msg.Value), "apache-proxy")
@@ -146,8 +186,8 @@ func TestPublishBlobsListedEvent(t *testing.T) {
 
 	msg := messages[0]
 	assert.Equal(t, "test-topic", msg.Topic)
-	// Verify key format follows pattern: {subscription}-{environment}-{selector}-{date}-listed
-	assert.Equal(t, "test-sub-test-env-apache-proxy-20250607-listed", string(msg.Key))
+	// Verify key format follows pattern: {subscription}:{environment}:{eventType}:{blobName}
+	assert.Equal(t, "test-sub:test-env:listed:apache-proxy-20250607", string(msg.Key))
 	// Verify payload contains scanning metadata
 	assert.Contains(t, string(msg.Value), "test-sub")
 	assert.Contains(t, string(msg.Value), "apache-proxy")
@@ -184,57 +224,13 @@ func TestPublishBlobClosedEvent(t *testing.T) {
 
 	msg := messages[0]
 	assert.Equal(t, "test-topic", msg.Topic)
-	// Verify key format follows pattern: {subscription}-{environment}-{cleanBlobName}-closed
-	assert.Equal(t, "test-sub-test-env-20250607.apache2-igc_proxy-test.gz-closed", string(msg.Key))
+	// Verify key format follows pattern: {subscription}:{environment}:{eventType}:{cleanBlobName}
+	assert.Equal(t, "test-sub:test-env:closed:20250607.apache2-igc_proxy-test.gz", string(msg.Key))
 	// Verify critical fields are present in JSON payload
 	assert.Contains(t, string(msg.Value), "test-sub")
 	assert.Contains(t, string(msg.Value), "apache-proxy")
 	assert.Contains(t, string(msg.Value), "closedDate")
 	assert.Contains(t, string(msg.Value), "timeoutMinutes")
-}
-
-// Validates Kafka message keys follow consistent format and handle path normalization
-func TestGenerateBlobKey(t *testing.T) {
-	tests := []struct {
-		name         string
-		subscription string
-		environment  string
-		blobName     string
-		suffix       string
-		expected     string
-	}{
-		{
-			name:         "strips kubernetes prefix for cleaner keys",
-			subscription: "cp2",
-			environment:  "D1",
-			blobName:     "kubernetes/20250607.apache2-igc_proxy-test.gz",
-			suffix:       "observed",
-			expected:     "cp2-D1-20250607.apache2-igc_proxy-test.gz-observed",
-		},
-		{
-			name:         "handles blobs without kubernetes prefix",
-			subscription: "cp2",
-			environment:  "S1",
-			blobName:     "20250607.api-service-test.gz",
-			suffix:       "observed",
-			expected:     "cp2-S1-20250607.api-service-test.gz-observed",
-		},
-		{
-			name:         "supports different suffixes for event types",
-			subscription: "cp2",
-			environment:  "P1",
-			blobName:     "kubernetes/20250607.zookeeper-test.gz",
-			suffix:       "listed",
-			expected:     "cp2-P1-20250607.zookeeper-test.gz-listed",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := generateBlobKey(tt.subscription, tt.environment, tt.blobName, tt.suffix)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
 }
 
 // Validates graceful shutdown closes internal channels and flushes Kafka producer
@@ -311,102 +307,83 @@ func TestDependencyInjectionDesign(t *testing.T) {
 }
 
 // Validates blob tracking functionality creates and updates trackers correctly
-func TestTrackBlob(t *testing.T) {
+// (No longer applicable: replaced by event-driven processor)
+//
+// Validates stateless blob closing detection emits closed events for timed-out blobs
+func TestStatelessBlobClosing(t *testing.T) {
 	config := createTestConfigWithBlobClosing(true, 5)
 	mockProducer := NewMockProducer()
-	mockStorageFactory := &MockStorageClientFactory{}
+	processor := NewBlobClosingProcessor(config, mockProducer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go processor.Start(ctx)
 
-	service, err := NewBlobMonitorService(config, mockProducer, mockStorageFactory)
-	require.NoError(t, err)
-
-	// Track a new blob
-	event := events.BlobObservedEvent{
+	// Simulate an old blob observed event (should be closed immediately)
+	oldTime := time.Now().Add(-10 * time.Minute)
+	oldEvent := events.BlobObservedEvent{
 		Subscription:     "test-sub",
 		Environment:      "test-env",
-		BlobName:         "test-blob.log",
-		ObservationDate:  time.Now(),
-		SizeInBytes:      1024,
-		LastModifiedDate: time.Now(),
+		BlobName:         "old-blob.log",
+		ObservationDate:  oldTime,
+		SizeInBytes:      2048,
+		LastModifiedDate: oldTime,
 		ServiceSelector:  "apache-proxy",
 	}
+	processor.ProcessBlobObserved(oldEvent)
 
-	service.trackBlob(event)
-
-	// Verify tracker was created
-	service.mu.RLock()
-	trackers := service.blobTrackers
-	service.mu.RUnlock()
-
-	assert.Len(t, trackers, 1)
-
-	blobKey := generateBlobKey(event.Subscription, event.Environment, event.BlobName, "tracker")
-	tracker, exists := trackers[blobKey]
-	require.True(t, exists)
-
-	assert.Equal(t, event.LastModifiedDate, tracker.LastModified)
-	assert.Equal(t, event.SizeInBytes, tracker.SizeInBytes)
-	assert.Equal(t, event.ServiceSelector, tracker.ServiceSelector)
-	assert.False(t, tracker.IsClosed)
-}
-
-// Validates blob closing detection marks inactive blobs as closed
-func TestDetectClosedBlobs(t *testing.T) {
-	config := createTestConfigWithBlobClosing(true, 5)
-	mockProducer := NewMockProducer()
-	mockStorageFactory := &MockStorageClientFactory{}
-
-	service, err := NewBlobMonitorService(config, mockProducer, mockStorageFactory)
-	require.NoError(t, err)
-
-	// Create a blob tracker that would be considered closed (last modified 10 minutes ago)
-	oldTime := time.Now().Add(-10 * time.Minute)
-	blobKey := generateBlobKey("test-sub", "test-env", "old-blob.log", "tracker")
-
-	service.mu.Lock()
-	service.blobTrackers[blobKey] = &BlobTracker{
-		Subscription:    "test-sub",
-		Environment:     "test-env",
-		BlobName:        "old-blob.log",
-		LastModified:    oldTime,
-		LastChecked:     time.Now(),
-		SizeInBytes:     2048,
-		ServiceSelector: "apache-proxy",
-		IsClosed:        false,
+	// Simulate a new blob observed event (should NOT be closed)
+	newTime := time.Now()
+	newEvent := events.BlobObservedEvent{
+		Subscription:     "test-sub",
+		Environment:      "test-env",
+		BlobName:         "new-blob.log",
+		ObservationDate:  newTime,
+		SizeInBytes:      1024,
+		LastModifiedDate: newTime,
+		ServiceSelector:  "apache-proxy",
 	}
-	service.mu.Unlock()
+	processor.ProcessBlobObserved(newEvent)
 
-	// Run blob closing detection
-	timeout := 5 * time.Minute
-	service.detectClosedBlobs(timeout)
+	// Give goroutines a moment to publish events
+	time.Sleep(20 * time.Millisecond)
 
-	// Verify blob was marked as closed
-	service.mu.RLock()
-	tracker := service.blobTrackers[blobKey]
-	service.mu.RUnlock()
-
-	assert.True(t, tracker.IsClosed)
-
-	// Verify BlobClosed event was published
+	// Verify BlobClosed event was published for the old blob only
 	messages := mockProducer.GetProducedMessages()
-	require.Len(t, messages, 1)
+	require.NotEmpty(t, messages, "Should have at least one BlobClosed event")
 
-	msg := messages[0]
-	assert.Equal(t, "test-topic", msg.Topic)
-	assert.Equal(t, "test-sub-test-env-old-blob.log-closed", string(msg.Key))
-	assert.Contains(t, string(msg.Value), "old-blob.log")
-	assert.Contains(t, string(msg.Value), "test-sub")
+	var foundOldClosed, foundNewClosed bool
+	for _, msg := range messages {
+		if string(msg.Key) == "test-sub:test-env:closed:old-blob.log" {
+			foundOldClosed = true
+			assert.Contains(t, string(msg.Value), "old-blob.log")
+			assert.Contains(t, string(msg.Value), "test-sub")
+		}
+		if string(msg.Key) == "test-sub:test-env:closed:new-blob.log" {
+			foundNewClosed = true
+		}
+	}
+	assert.True(t, foundOldClosed, "Old blob should be closed and event published")
+	assert.False(t, foundNewClosed, "New blob should NOT be closed")
+
+	// Test stateless behavior: same old blob will emit closed event again
+	// (deduplication handled downstream)
+	processor.ProcessBlobObserved(oldEvent)
+	time.Sleep(10 * time.Millisecond)
+
+	// Should generate another closed event (stateless - no tracking)
+	finalMessages := mockProducer.GetProducedMessages()
+	assert.Greater(t, len(finalMessages), len(messages), "Should generate duplicate closed event (stateless)")
 }
 
 // Validates blob closing is skipped when disabled in configuration
 func TestBlobClosingDisabled(t *testing.T) {
 	config := createTestConfigWithBlobClosing(false, 5)
 	mockProducer := NewMockProducer()
-	mockStorageFactory := &MockStorageClientFactory{}
 
-	service, err := NewBlobMonitorService(config, mockProducer, mockStorageFactory)
-	require.NoError(t, err)
+	// When blob closing is disabled, consumer should be nil
+	processor := NewBlobClosingProcessor(config, mockProducer)
 
-	// Track a blob
+	// Simulate a blob observed event
 	event := events.BlobObservedEvent{
 		Subscription:     "test-sub",
 		Environment:      "test-env",
@@ -416,123 +393,23 @@ func TestBlobClosingDisabled(t *testing.T) {
 		LastModifiedDate: time.Now(),
 		ServiceSelector:  "apache-proxy",
 	}
+	processor.ProcessBlobObserved(event)
 
-	service.trackBlob(event)
+	// Give it a moment to process
+	time.Sleep(10 * time.Millisecond)
 
-	// Verify no trackers were created (since blob closing is disabled)
-	service.mu.RLock()
-	trackers := service.blobTrackers
-	service.mu.RUnlock()
-
-	assert.Empty(t, trackers)
+	// No closed events should be published (since blob closing is disabled)
+	messages := mockProducer.GetProducedMessages()
+	for _, msg := range messages {
+		assert.NotEqual(t, "test-sub:test-env:closed:test-blob.log", string(msg.Key))
+	}
 }
 
 // Validates blob tracker updates correctly when blob is modified
-func TestTrackBlobUpdate(t *testing.T) {
-	config := createTestConfigWithBlobClosing(true, 5)
-	mockProducer := NewMockProducer()
-	mockStorageFactory := &MockStorageClientFactory{}
+// (No longer applicable: replaced by event-driven processor)
+//
 
-	service, err := NewBlobMonitorService(config, mockProducer, mockStorageFactory)
-	require.NoError(t, err)
-
-	// Track initial blob
-	initialTime := time.Now().Add(-2 * time.Minute)
-	event1 := events.BlobObservedEvent{
-		Subscription:     "test-sub",
-		Environment:      "test-env",
-		BlobName:         "test-blob.log",
-		ObservationDate:  initialTime,
-		SizeInBytes:      1024,
-		LastModifiedDate: initialTime,
-		ServiceSelector:  "apache-proxy",
-	}
-	service.trackBlob(event1)
-
-	// Track updated blob with newer modification time
-	updatedTime := time.Now()
-	event2 := events.BlobObservedEvent{
-		Subscription:     "test-sub",
-		Environment:      "test-env",
-		BlobName:         "test-blob.log",
-		ObservationDate:  updatedTime,
-		SizeInBytes:      2048,
-		LastModifiedDate: updatedTime,
-		ServiceSelector:  "apache-proxy",
-	}
-	service.trackBlob(event2)
-
-	// Verify tracker was updated with newer information
-	service.mu.RLock()
-	trackers := service.blobTrackers
-	service.mu.RUnlock()
-
-	assert.Len(t, trackers, 1)
-
-	blobKey := generateBlobKey(event1.Subscription, event1.Environment, event1.BlobName, "tracker")
-	tracker, exists := trackers[blobKey]
-	require.True(t, exists)
-
-	assert.Equal(t, updatedTime, tracker.LastModified)
-	assert.Equal(t, int64(2048), tracker.SizeInBytes)
-	assert.False(t, tracker.IsClosed)
-}
-
-// Validates blob tracker cleanup removes old closed blobs
-func TestBlobTrackerCleanup(t *testing.T) {
-	config := createTestConfigWithBlobClosing(true, 5)
-	mockProducer := NewMockProducer()
-	mockStorageFactory := &MockStorageClientFactory{}
-
-	service, err := NewBlobMonitorService(config, mockProducer, mockStorageFactory)
-	require.NoError(t, err)
-
-	// Create old closed blob tracker (25 hours ago)
-	oldTime := time.Now().Add(-25 * time.Hour)
-	oldBlobKey := generateBlobKey("test-sub", "test-env", "old-blob.log", "tracker")
-
-	service.mu.Lock()
-	service.blobTrackers[oldBlobKey] = &BlobTracker{
-		Subscription:    "test-sub",
-		Environment:     "test-env",
-		BlobName:        "old-blob.log",
-		LastModified:    oldTime,
-		LastChecked:     oldTime,
-		SizeInBytes:     1024,
-		ServiceSelector: "apache-proxy",
-		IsClosed:        true,
-	}
-
-	// Create recent closed blob tracker (1 hour ago)
-	recentTime := time.Now().Add(-1 * time.Hour)
-	recentBlobKey := generateBlobKey("test-sub", "test-env", "recent-blob.log", "tracker")
-	service.blobTrackers[recentBlobKey] = &BlobTracker{
-		Subscription:    "test-sub",
-		Environment:     "test-env",
-		BlobName:        "recent-blob.log",
-		LastModified:    recentTime,
-		LastChecked:     recentTime,
-		SizeInBytes:     2048,
-		ServiceSelector: "apache-proxy",
-		IsClosed:        true,
-	}
-	service.mu.Unlock()
-
-	// Run detection which should clean up old trackers
-	timeout := 5 * time.Minute
-	service.detectClosedBlobs(timeout)
-
-	// Verify old tracker was cleaned up but recent one remains
-	service.mu.RLock()
-	trackers := service.blobTrackers
-	service.mu.RUnlock()
-
-	_, oldExists := trackers[oldBlobKey]
-	_, recentExists := trackers[recentBlobKey]
-
-	assert.False(t, oldExists, "Old closed blob tracker should be cleaned up")
-	assert.True(t, recentExists, "Recent closed blob tracker should remain")
-}
+// (No longer applicable: state reconstruction removed with simplified design)
 
 func createTestConfig() *blobConfig.Config {
 	return createTestConfigWithBlobClosing(false, 5)

@@ -6,7 +6,8 @@ toolchain go1.23.10
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.1
-	github.com/Log-Tools/commerce-logs-pipeline/config v0.0.0
+	github.com/Log-Tools/commerce-logs-pipeline/config v1.0.0
+	github.com/Log-Tools/commerce-logs-pipeline/pipeline/events v1.0.0
 	github.com/confluentinc/confluent-kafka-go/v2 v2.10.0
 )
 
@@ -22,3 +23,5 @@ require (
 // Temporary replace directive for local development
 // Remove this once the repository is published on GitHub at github.com/Log-Tools/commerce-logs-pipeline
 replace github.com/Log-Tools/commerce-logs-pipeline/config => ../config
+
+replace github.com/Log-Tools/commerce-logs-pipeline/pipeline/events => ../events

@@ -1,32 +1,91 @@
+# Commerce Cloud Blob Monitor Configuration
+# This service polls Azure Blob Storage for new log files and publishes events to Kafka
+
+# Kafka Configuration
 kafka:
   brokers: "localhost:9092"
   topic: "Ingestion.Blobs"
   producer_config:
-    acks: "all"
-    retries: 3
+    acks: "all"                # Wait for all replicas to acknowledge
+    retries: 3                 # Number of retries on failure
+    retry.backoff.ms: 1000     # Backoff time between retries
 
+# Global Configuration
 global:
+  # Default polling interval for current day monitoring (in seconds)
   polling_interval: 300  # 5 minutes
+  
+  # End-of-day overlap period (in minutes)
+  # During this period at start of day, monitor both current and previous day
   eod_overlap_minutes: 60  # 1 hour overlap
+  
+  # Time zone for date calculations (important for end-of-day transitions)
   timezone: "UTC"
+  
+  # Blob closing detection settings
+  blob_closing:
+    # Enable blob closing detection
+    enabled: true
+    
+    # Minutes without modification to consider a blob closed
+    # Once closed, workers can stop polling the blob as no new data is expected
+    timeout_minutes: 5
 
+# Date Range Configuration
 date_range:
-  days_back: 3  # Look back 3 days
+  # How far back to look for missing blobs
+  # Can be either:
+  # - specific_date: "2025-06-01"  # Start from specific date
+  # - days_back: 7                # Look back N days from today
+  days_back: 3
+  
+  # Whether to continue monitoring current day after historical scan
   monitor_current_day: true
 
+# Environments to Monitor
 environments:
+  # Development Environment
   - subscription: "cp2"
     environment: "D1"
     enabled: true
-    polling_interval: 600  # Override: 10 minutes for dev
+    # Override global polling interval for this environment (optional)
+    polling_interval: 10  # 10 seconds for dev
+    # Environment-specific selectors to monitor
     selectors:
       - "apache-proxy"
-      - "api-service"
-      - "zookeeper"
+      - "api"
 
+  # Staging Environment (uncomment to enable)
+  # - subscription: "cp2" 
+  #   environment: "S1"
+  #   enabled: true
+  #   polling_interval: 300  # 5 minutes for staging
+  #   selectors:
+  #     - "apache-proxy"
+  #     - "zookeeper"
+
+  # Production Environment (uncomment to enable)
+  # - subscription: "cp2"
+  #   environment: "P1" 
+  #   enabled: true
+  #   polling_interval: 120  # 2 minutes for production
+  #   selectors:
+  #     - "apache-proxy"
+  #     - "zookeeper"
+
+# Note: Blob selectors are defined in code (selectors.go)
+# Available selectors: apache-proxy, api-service, admin-interface, background-processing,
+# web-apps, imageprocessing, zookeeper
+# The config only references them by name - implementation is in Go code
+
+# Storage Configuration
 storage:
   container_name: "commerce-logs-separated"
-
+  
+# Monitoring and Observability
 monitoring:
-  log_level: "info"
-  enable_metrics: true 
+  # Enable metrics collection
+  enable_metrics: true
+  
+  # Log level (debug, info, warn, error)
+  log_level: "info" 

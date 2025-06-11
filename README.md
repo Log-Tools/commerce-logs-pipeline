@@ -281,7 +281,7 @@ if err != nil {
 cd pipeline/blob-monitor
 
 # Run with example configuration
-go run cmd/blob-monitor/main.go config.yaml.example
+go run cmd/blob-monitor/main.go configs/config.yaml
 
 # Run with custom configuration
 go run cmd/blob-monitor/main.go configs/config.yaml

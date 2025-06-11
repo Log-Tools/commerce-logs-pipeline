@@ -30,7 +30,7 @@ pipeline/blob-monitor/
 ├── test/                    # Integration tests
 │   └── integration_test.go  # Kafka integration tests with testcontainers
 ├── configs/                 # Configuration files
-│   └── config.yaml         # Default configuration
+│   └── config.yaml         # Example configuration (version controlled)
 ├── deployments/             # Deployment configurations
 │   └── Dockerfile          # Multi-stage Docker build
 ├── bin/                     # Built binaries (gitignored)

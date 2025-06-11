@@ -2,7 +2,7 @@
 .PHONY: help dev-up dev-down build test clean build-go clean-go test-go install-go
 
 # Go modules
-MODULES := pipeline/blob-monitor pipeline/ingest
+MODULES := pipeline/blob-monitor pipeline/events pipeline/ingest
 
 # Default target
 help:
@@ -31,10 +31,12 @@ help:
 	@echo "  make wipe-topics     Delete all Kafka topics (soft reset)"
 	@echo "  make wipe-data       Remove all Kafka data (hard reset)"
 	@echo "  make list-topics     Show current Kafka topics"
+	@echo "  make list-active-blobs Show currently active (open) blobs from compacted state"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make logs           Show logs from all services"
 	@echo "  make clean          Remove all containers and images"
+	@echo "  make init-kafka      Create/verify Kafka topics from configs/kafka_topics.yaml"
 	@echo "  make test-kafka     Test Kafka connectivity"
 
 # Go build targets
@@ -42,7 +44,7 @@ build-go:
 	@echo "🔨 Building all Go modules..."
 	@for module in $(MODULES); do \
 		echo "Building $$module..."; \
-		$(MAKE) -C $$module build; \
+		/usr/bin/make -C $$module build; \
 	done
 	@echo "✅ All Go modules built!"
 
@@ -50,7 +52,7 @@ clean-go:
 	@echo "🧹 Cleaning all Go modules..."
 	@for module in $(MODULES); do \
 		echo "Cleaning $$module..."; \
-		$(MAKE) -C $$module clean; \
+		/usr/bin/make -C $$module clean; \
 	done
 	@echo "✅ All Go modules cleaned!"
 
@@ -58,7 +60,7 @@ test-go:
 	@echo "🧪 Testing all Go modules..."
 	@for module in $(MODULES); do \
 		echo "Testing $$module..."; \
-		$(MAKE) -C $$module test; \
+		/usr/bin/make -C $$module test; \
 	done
 	@echo "✅ All Go modules tested!"
 
@@ -66,14 +68,14 @@ install-go:
 	@echo "📦 Installing all Go modules..."
 	@for module in $(MODULES); do \
 		echo "Installing $$module..."; \
-		$(MAKE) -C $$module install; \
+		/usr/bin/make -C $$module install; \
 	done
 	@echo "✅ All Go modules installed!"
 
 # Module-specific targets
 run-blob-monitor:
 	@echo "🔍 Starting blob monitor with example configuration..."
-	cd pipeline/blob-monitor && go run cmd/blob-monitor/main.go config.yaml.example
+	cd pipeline/blob-monitor && go run cmd/blob-monitor/main.go configs/config.yaml
 
 test-blob-monitor:
 	@echo "🧪 Testing blob monitor module..."
@@ -131,7 +133,15 @@ wipe-topics:
 		docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list || echo "   (no topics or Kafka not ready)"; \
 		echo ""; \
 		echo "🗑️  Deleting topics..."; \
-		docker exec kafka sh -c 'kafka-topics --bootstrap-server localhost:9092 --list | grep -v "^__" | xargs -r -I {} kafka-topics --bootstrap-server localhost:9092 --delete --topic {}' || echo "   (no user topics to delete)"; \
+		TOPICS=$$(docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list | grep -v "^__" | grep -v "^$$"); \
+		if [ -n "$$TOPICS" ]; then \
+			for topic in $$TOPICS; do \
+				echo "   Deleting topic: $$topic"; \
+				docker exec kafka kafka-topics --bootstrap-server localhost:9092 --delete --topic "$$topic"; \
+			done; \
+		else \
+			echo "   (no user topics to delete)"; \
+		fi; \
 		echo "✅ Topics deleted. New topics will be auto-created when needed."; \
 	else \
 		echo "❌ Kafka container not running. Start with: make dev-up"; \
@@ -161,6 +171,17 @@ list-topics:
 		echo "❌ Kafka container not running. Start with: make dev-up"; \
 	fi
 
+# Lists currently active blobs (status = "open") from the compacted BlobState topic
+list-active-blobs:
+	@echo "📋 Currently active (open) blobs:"
+	@if docker ps | grep -q kafka; then \
+		docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic Ingestion.BlobState --from-beginning --timeout-ms 5000 --property print.key=true --property key.separator='|' 2>/dev/null \
+		| awk -F '|' '{state[$$1]=$$2} END {for (k in state) if (state[k] ~ /\"status\":\"open\"/) print k}' \
+		| sort; \
+	else \
+		echo "❌ Kafka container not running. Start with: make dev-up"; \
+	fi
+
 # Utility commands
 logs:
 	docker compose logs -f
@@ -173,4 +194,13 @@ test-kafka:
 clean:
 	@echo "🧹 Cleaning up containers and images..."
 	docker compose -f docker-compose.yml -f docker-compose.app.yml down --volumes --rmi all
-	docker system prune -f 
+	docker system prune -f
+
+# Initializes required Kafka topics based on configs/kafka_topics.yaml
+init-kafka:
+	@echo "🛠️  Initialising Kafka topics..."
+	@if docker ps | grep -q kafka; then \
+		go run ./tools/kafka-init -brokers localhost:9092 -config configs/kafka_topics.yaml; \
+	else \
+		echo "❌ Kafka container not running. Start with: make dev-up"; \
+	fi 
