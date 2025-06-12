@@ -263,6 +263,18 @@ func (w *IngestionWorker) updateBlobStateFromEvent(event *events.BlobStateEvent)
 		return false
 	}
 
+	// Don't track closed blobs that are already fully ingested
+	if event.Status == "closed" && event.LastIngestedOffset >= event.SizeInBytes {
+		log.Printf("Skipping closed and fully ingested blob %s (offset %d >= size %d)",
+			event.BlobName, event.LastIngestedOffset, event.SizeInBytes)
+		// Remove from tracking if we were tracking it
+		if _, exists := w.blobStates[event.BlobName]; exists {
+			delete(w.blobStates, event.BlobName)
+			log.Printf("Removed fully ingested closed blob %s from tracking", event.BlobName)
+		}
+		return false
+	}
+
 	// Get or update blob state - preserve existing state if we have it
 	var blobState *BlobState
 	var isNewBlob bool
@@ -454,9 +466,11 @@ func (w *IngestionWorker) processBlobWithMetrics(ctx context.Context, blob *Blob
 		if state, exists := w.blobStates[blob.BlobName]; exists {
 			state.LastUpdated = time.Now()
 
-			// Update the LastOffset to prevent reprocessing
+			// Track if we processed new data in this iteration
+			processedNewData := false
 			if result != nil && result.ProcessedToOffset > state.LastOffset {
 				state.LastOffset = result.ProcessedToOffset
+				processedNewData = true
 				log.Printf("📊 %s Completed blob: %s | Duration: %.1fs | Bytes: %s | Speed: %s | Lines: %d | Write latency: %.1fs",
 					progress, blob.BlobName, processingDuration.Seconds(),
 					formatBytes(bytesProcessed), speedText, result.LinesProcessed, writeLatency)
@@ -465,10 +479,12 @@ func (w *IngestionWorker) processBlobWithMetrics(ctx context.Context, blob *Blob
 					progress, blob.BlobName, processingDuration.Seconds())
 			}
 
-			// If blob is closed and we've processed to the end, remove from tracking
-			if state.State == "closed" {
+			// Only remove closed blobs if no new data was processed (indicating blob is fully consumed)
+			if state.State == "closed" && !processedNewData {
 				log.Printf("🔒 Blob %s is closed and fully processed, removing from tracking", blob.BlobName)
 				delete(w.blobStates, blob.BlobName)
+			} else if state.State == "closed" && processedNewData {
+				log.Printf("📝 Blob %s is closed but still had new data, keeping in tracking for next iteration", blob.BlobName)
 			}
 		}
 	}
