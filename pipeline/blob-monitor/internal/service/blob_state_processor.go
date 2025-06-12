@@ -50,6 +50,12 @@ func NewBlobStateProcessor(config *blobConfig.Config, producer Producer) (*BlobS
 func (processor *BlobStateProcessor) Start(ctx context.Context) error {
 	log.Printf("🗂️ Starting blob state processor")
 
+	// Load existing blob state from the compacted topic before processing new events
+	if err := processor.loadExistingBlobState(ctx); err != nil {
+		log.Printf("⚠️ Failed to load existing blob state: %v", err)
+		log.Printf("🔄 Continuing with empty state - this may cause offset resets")
+	}
+
 	// Subscribe to the blob events topic
 	err := processor.consumer.Subscribe(sharedEvents.TopicBlobs, nil)
 	if err != nil {
@@ -277,4 +283,93 @@ func (processor *BlobStateProcessor) publishBlobState(state sharedEvents.BlobSta
 // Generates a consistent blob key for compaction
 func (processor *BlobStateProcessor) getBlobKey(subscription, environment, blobName string) string {
 	return fmt.Sprintf("%s:%s:%s", subscription, environment, blobName)
+}
+
+// loadExistingBlobState loads existing blob state from the compacted BlobState topic
+func (processor *BlobStateProcessor) loadExistingBlobState(ctx context.Context) error {
+	log.Printf("🔄 Loading existing blob state from compacted topic...")
+
+	// Create a temporary consumer to read the entire compacted topic
+	consumerConfig := &kafka.ConfigMap{
+		"bootstrap.servers":  processor.config.Kafka.Brokers,
+		"group.id":           fmt.Sprintf("blob-state-loader-%d", time.Now().Unix()), // Unique group for one-time read
+		"auto.offset.reset":  "earliest",
+		"enable.auto.commit": false,
+	}
+
+	tempConsumer, err := kafka.NewConsumer(consumerConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create temporary consumer: %w", err)
+	}
+	defer tempConsumer.Close()
+
+	// Assign all partitions to read from beginning
+	topicName := sharedEvents.TopicBlobState
+	metadata, err := tempConsumer.GetMetadata(&topicName, false, 5000)
+	if err != nil {
+		return fmt.Errorf("failed to get metadata for %s: %w", sharedEvents.TopicBlobState, err)
+	}
+
+	var partitions []kafka.TopicPartition
+	for _, partition := range metadata.Topics[sharedEvents.TopicBlobState].Partitions {
+		partitions = append(partitions, kafka.TopicPartition{
+			Topic:     &topicName,
+			Partition: partition.ID,
+			Offset:    kafka.Offset(-2), // -2 is earliest, -1 is latest
+		})
+	}
+
+	if err := tempConsumer.Assign(partitions); err != nil {
+		return fmt.Errorf("failed to assign partitions: %w", err)
+	}
+
+	loadedCount := 0
+	timeout := 10 * time.Second
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			// Poll for messages with short timeout
+			ev := tempConsumer.Poll(1000)
+			if ev == nil {
+				continue
+			}
+
+			switch e := ev.(type) {
+			case *kafka.Message:
+				// Parse the blob state event
+				var blobState sharedEvents.BlobStateEvent
+				if err := json.Unmarshal(e.Value, &blobState); err != nil {
+					log.Printf("⚠️ Failed to unmarshal blob state from compacted topic: %v", err)
+					continue
+				}
+
+				// Store in memory
+				blobKey := processor.getBlobKey(blobState.Subscription, blobState.Environment, blobState.BlobName)
+				processor.blobStates[blobKey] = &blobState
+				loadedCount++
+
+				if loadedCount%100 == 0 {
+					log.Printf("📊 Loaded %d blob states...", loadedCount)
+				}
+
+			case kafka.Error:
+				if e.Code() == kafka.ErrTimedOut {
+					// No more messages available - we've read all existing state
+					goto done
+				}
+				log.Printf("⚠️ Error while loading state: %v", e)
+
+			default:
+				// Ignore other event types
+			}
+		}
+	}
+
+done:
+	log.Printf("✅ Loaded %d existing blob states from compacted topic", loadedCount)
+	return nil
 }
