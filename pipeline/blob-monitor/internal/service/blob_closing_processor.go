@@ -83,13 +83,11 @@ func (blobClosingProcessor *BlobClosingProcessor) processObservedEvent(event eve
 		}
 
 		// Publish the closed event
-		go func(evt events.BlobClosedEvent) {
-			if err := blobClosingProcessor.publishBlobClosedEvent(evt); err != nil {
-				log.Printf("❌ Failed to publish BlobClosed event for %s: %v", evt.BlobName, err)
-			} else {
-				log.Printf("🔐 Blob closed: %s (inactive for %v)", evt.BlobName, timeout)
-			}
-		}(closedEvent)
+		if err := blobClosingProcessor.publishBlobClosedEvent(closedEvent); err != nil {
+			log.Printf("❌ Failed to publish BlobClosed event for %s: %v", closedEvent.BlobName, err)
+		} else {
+			log.Printf("🔐 Blob closed: %s (inactive for %v)", closedEvent.BlobName, timeout)
+		}
 	}
 }
 

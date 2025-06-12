@@ -1,0 +1,25 @@
+# Ingestion CLI Mode Configuration Example
+# This maintains backwards compatibility with the original ingest tool
+mode: cli
+
+# CLI-specific configuration
+cli:
+  subscription_id: "cp2"
+  environment: "P1"
+  container_name: "logs"
+  blob_name: "kubernetes/20241215.app-service-1_default_app-c7bc5a98e73ebf8ae9e8bf3c4815a7df984c382142fa57012e42137f608015d0.gz"
+  start_offset: 0
+
+# Kafka configuration
+kafka:
+  brokers: "localhost:9092"
+  ingest_topic: "Ingestion.RawLogs"
+  blobs_topic: "Ingestion.Blobs"
+  
+  producer:
+    acks: "all"
+    flush_timeout_ms: 30000
+    delivery_channel_size: 10000
+
+# Logging
+log_level: "info" 

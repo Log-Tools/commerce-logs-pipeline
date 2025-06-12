@@ -1,0 +1,59 @@
+# Ingestion Worker Configuration Example
+mode: worker
+
+# Worker-specific configuration
+worker:
+  # Blob state topic configuration
+  blob_state_topic: "Ingestion.BlobState"
+  consumer_group: "ingestion-worker-shard-0"
+  
+  # Filtering options
+  filters:
+    # Date filters (YYYY-MM-DD format)
+    min_date: "2024-01-01"
+    # max_date: null  # Uncomment to set upper bound, null means follow continuously
+    
+    # Subscription filter (empty means all)
+    subscriptions:
+      - "cp2"
+      - "cp3"
+    
+    # Environment filter (empty means all)
+    environments:
+      - "P1"
+      - "S1"
+    
+    # Selector filter - regex patterns (empty means all)
+    selectors:
+      - "apache-.*"
+      - "nginx-.*"
+      - "app-.*"
+  
+  # Sharding configuration for horizontal scaling
+  sharding:
+    enabled: true
+    shards_count: 4
+    shard_number: 0  # This worker handles shard 0 (0-based)
+  
+  # Processing configuration
+  processing:
+    loop_interval: "30s"
+    line_buffer_size: 1048576  # 1MB
+
+# Kafka configuration
+kafka:
+  brokers: "localhost:9092"
+  ingest_topic: "Ingestion.RawLogs"
+  blobs_topic: "Ingestion.Blobs"
+  
+  producer:
+    acks: "all"
+    flush_timeout_ms: 30000
+    delivery_channel_size: 10000
+  
+  consumer:
+    auto_offset_reset: "earliest"
+    enable_auto_commit: true
+
+# Logging
+log_level: "info" 

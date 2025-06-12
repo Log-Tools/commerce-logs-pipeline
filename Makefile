@@ -1,5 +1,5 @@
 # Commerce Logs Pipeline - Docker Operations & Go Builds
-.PHONY: help dev-up dev-down build test clean build-go clean-go test-go install-go
+.PHONY: help dev-up dev-down build test clean build-go clean-go test-go install-go status quick-start
 
 # Go modules
 MODULES := pipeline/blob-monitor pipeline/events pipeline/ingest
@@ -20,8 +20,10 @@ help:
 	@echo "  make run-ingest      Run ingestion pipeline (requires env vars)"
 	@echo ""
 	@echo "Development (recommended):"
+	@echo "  make quick-start     Complete fresh setup (stop→clean→start→init)"
 	@echo "  make dev-up          Start Kafka & Kafdrop for local development"
 	@echo "  make dev-down        Stop development services"
+	@echo "  make status          Show system health and running services"
 	@echo ""
 	@echo "Production testing:"
 	@echo "  make build-ingest    Build ingestion pipeline image"
@@ -96,6 +98,9 @@ test: test-go
 dev-up:
 	@echo "🚀 Starting development infrastructure..."
 	docker compose up -d kafka kafdrop
+	@echo "⏳ Waiting for Kafka to be ready..."
+	@sleep 8
+	@$(MAKE) init-kafka
 	@echo "✅ Development infrastructure running:"
 	@echo "   - Kafka: localhost:9092"
 	@echo "   - Kafdrop UI: http://localhost:9000"
@@ -143,6 +148,8 @@ wipe-topics:
 			echo "   (no user topics to delete)"; \
 		fi; \
 		echo "✅ Topics deleted. New topics will be auto-created when needed."; \
+		echo "🔄 Recreating topics with proper configuration..."; \
+		$(MAKE) init-kafka; \
 	else \
 		echo "❌ Kafka container not running. Start with: make dev-up"; \
 	fi
@@ -157,11 +164,14 @@ wipe-data:
 	docker volume rm commerce-logs-pipeline_kafka-data 2>/dev/null || echo "   (volume already removed or not found)"
 	@echo "🚀 Restarting Kafka..."
 	docker compose up -d kafka
-	@echo "✅ Kafka data wiped and service restarted."
-	@echo "   Waiting for Kafka to be ready..."
-	@sleep 5
-	@docker compose up -d kafdrop
+	@echo "⏳ Waiting for Kafka to be ready..."
+	@sleep 8
+	@echo "🛠️  Initializing topics..."
+	@$(MAKE) init-kafka
 	@echo "✅ Fresh Kafka environment ready!"
+	@sleep 2
+	@docker compose up -d kafdrop
+	@echo "🌐 Kafdrop UI available at http://localhost:9000"
 
 list-topics:
 	@echo "📋 Current Kafka topics:"
@@ -188,8 +198,13 @@ logs:
 
 test-kafka:
 	@echo "🔍 Testing Kafka connectivity..."
-	docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list || \
-		echo "❌ Kafka not running or not accessible"
+	@if docker ps | grep -q kafka; then \
+		docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1 && \
+		echo "✅ Kafka is accessible" || \
+		echo "❌ Kafka not ready or not accessible"; \
+	else \
+		echo "❌ Kafka container not running. Start with: make dev-up"; \
+	fi
 
 clean:
 	@echo "🧹 Cleaning up containers and images..."
@@ -198,9 +213,97 @@ clean:
 
 # Initializes required Kafka topics based on configs/kafka_topics.yaml
 init-kafka:
-	@echo "🛠️  Initialising Kafka topics..."
+	@echo "🛠️  Initializing Kafka topics..."
 	@if docker ps | grep -q kafka; then \
-		go run ./tools/kafka-init -brokers localhost:9092 -config configs/kafka_topics.yaml; \
+		echo "⏳ Waiting for Kafka to be fully ready..."; \
+		timeout=30; \
+		while [ $$timeout -gt 0 ]; do \
+			if docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then \
+				echo "✅ Kafka is ready"; \
+				break; \
+			fi; \
+			echo "   Waiting... ($$timeout seconds remaining)"; \
+			sleep 2; \
+			timeout=$$((timeout-2)); \
+		done; \
+		if [ $$timeout -le 0 ]; then \
+			echo "❌ Kafka failed to become ready within 30 seconds"; \
+			exit 1; \
+		fi; \
+		echo "📋 Creating/verifying topics from configs/kafka_topics.yaml..."; \
+		cd tools/kafka-init && go run . -brokers localhost:9092 -config ../../configs/kafka_topics.yaml; \
+		echo "✅ Kafka topics initialized"; \
 	else \
 		echo "❌ Kafka container not running. Start with: make dev-up"; \
-	fi 
+		exit 1; \
+	fi
+
+# Enhanced status command to show full system health
+status:
+	@echo "🔍 System Status Check"
+	@echo "====================="
+	@echo ""
+	@echo "📦 Docker Services:"
+	@docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo "   No services running"
+	@echo ""
+	@echo "📋 Kafka Topics:"
+	@if docker ps | grep -q kafka; then \
+		if docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then \
+			docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list --exclude-internal | sed 's/^/   /' || echo "   (no topics)"; \
+		else \
+			echo "   ❌ Kafka not ready"; \
+		fi; \
+	else \
+		echo "   ❌ Kafka not running"; \
+	fi
+	@echo ""
+	@echo "🌐 Web Interfaces:"
+	@if docker ps | grep -q kafdrop; then \
+		echo "   ✅ Kafdrop UI: http://localhost:9000"; \
+	else \
+		echo "   ❌ Kafdrop not running"; \
+	fi
+
+# Quick development setup command
+quick-start:
+	@echo "🚀 Quick Development Setup"
+	@echo "=========================="
+	@echo ""
+	@echo "🛑 Stopping any existing services..."
+	@docker compose down >/dev/null 2>&1 || true
+	@echo "🧹 Cleaning old data..."
+	@docker volume rm commerce-logs-pipeline_kafka-data >/dev/null 2>&1 || true
+	@echo "🚀 Starting fresh environment..."
+	@docker compose up -d kafka kafdrop
+	@echo "⏳ Waiting for Kafka to be ready..."
+	@sleep 8
+	@echo "🛠️  Initializing Kafka topics..."
+	@if docker ps | grep -q kafka; then \
+		echo "⏳ Waiting for Kafka to be fully ready..."; \
+		timeout=30; \
+		while [ $$timeout -gt 0 ]; do \
+			if docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then \
+				echo "✅ Kafka is ready"; \
+				break; \
+			fi; \
+			echo "   Waiting... ($$timeout seconds remaining)"; \
+			sleep 2; \
+			timeout=$$((timeout-2)); \
+		done; \
+		if [ $$timeout -le 0 ]; then \
+			echo "❌ Kafka failed to become ready within 30 seconds"; \
+			exit 1; \
+		fi; \
+		echo "📋 Creating/verifying topics from configs/kafka_topics.yaml..."; \
+		cd tools/kafka-init && go run . -brokers localhost:9092 -config ../../configs/kafka_topics.yaml; \
+		echo "✅ Kafka topics initialized"; \
+	else \
+		echo "❌ Kafka container not running"; \
+		exit 1; \
+	fi
+	@echo "✅ Development infrastructure running:"
+	@echo "   - Kafka: localhost:9092"
+	@echo "   - Kafdrop UI: http://localhost:9000"
+	@echo ""
+	@echo "🎉 Ready! Your development environment is up and running!"
+	@echo "   Run 'make status' to see system health" 

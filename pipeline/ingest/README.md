@@ -1,197 +1,300 @@
-# Raw Log Ingestion Pipeline
+# Ingestion Service
 
-This component handles the initial ingestion of raw log data from Azure Blob Storage into Kafka for further processing.
+The ingestion service handles the processing of raw log data from Azure Blob Storage into Kafka. It supports both CLI mode (for backwards compatibility and dev/test) and worker mode (for production scalable deployments).
 
 ## Overview
 
-The raw ingestion pipeline is the first stage of the commerce logs processing system. It reads log files from Azure Blob Storage, processes them line by line, and publishes each line as a separate message to a Kafka topic for downstream processing.
+The service processes log files from Azure Blob Storage, extracts log lines, and publishes them to Kafka topics. It supports:
+
+- **CLI Mode**: Direct blob processing (backwards compatible)
+- **Worker Mode**: Continuous monitoring and processing with filtering and sharding
+- **Filtering**: By date, subscription, environment, and selector patterns
+- **Sharding**: Horizontal scaling across multiple worker instances
+- **Resumable Processing**: Offset-based processing for reliability
 
 ## Architecture
 
 ```
-Azure Blob Storage → Raw Ingestion Service → Kafka Topic (Ingestion.RawLogs)
+Azure Blob Storage → Ingestion Service → Kafka Topics
+                          ↑
+                    Blob State Topic
+                    (Worker Mode)
 ```
 
-### Key Components
+### Modes
 
-- **Blob Reader**: Downloads and processes log files from Azure Blob Storage
-- **Line Parser**: Reads log files line by line with support for compressed (gzip) files
-- **Kafka Producer**: Publishes each log line as a separate Kafka message
-- **Progress Tracking**: Maintains offset tracking for resumable processing
+#### CLI Mode
+- Direct blob processing from command line
+- Backwards compatible with original ingest tool
+- Suitable for dev/test and one-off processing
+
+#### Worker Mode
+- Continuous monitoring of blob state topic
+- Automatic processing of new/changed blobs
+- Supports filtering and sharding for production use
+- Scalable across multiple instances
 
 ## Configuration
 
-### Environment Variables
+### Environment Variables (CLI Mode)
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `SUBSCRIPTION_ID` | Azure subscription ID | Yes | - |
-| `ENVIRONMENT` | Environment name (dev, staging, prod) | Yes | - |
-| `AZURE_STORAGE_CONTAINER_NAME` | Azure Storage container name | Yes | - |
-| `AZURE_STORAGE_BLOB_NAME` | Blob file name to process | Yes | - |
-| `KAFKA_BROKERS` | Comma-separated list of Kafka brokers | Yes | - |
-| `KAFKA_TOPIC` | Kafka topic name | No | `Ingestion.RawLogs` |
-| `START_OFFSET` | Byte offset to start reading from | No | `0` |
+| `INGEST_MODE` | Mode: 'cli' or 'worker' | No | `worker` |
+| `SUBSCRIPTION_ID` | Azure subscription ID | Yes (CLI) | - |
+| `ENVIRONMENT` | Environment name | Yes (CLI) | - |
+| `AZURE_STORAGE_CONTAINER_NAME` | Container name | Yes (CLI) | - |
+| `AZURE_STORAGE_BLOB_NAME` | Blob name to process | Yes (CLI) | - |
+| `START_OFFSET` | Byte offset to start from | No | `0` |
+| `KAFKA_BROKERS` | Kafka broker addresses | Yes | `localhost:9092` |
+| `AZURE_STORAGE_ACCOUNT_NAME` | Storage account name | Yes | - |
+| `AZURE_STORAGE_ACCESS_KEY` | Storage account key | Yes | - |
 
-### Example Configuration
+### Environment Variables (Worker Mode)
 
-```bash
-export SUBSCRIPTION_ID="your-azure-subscription-id"
-export ENVIRONMENT="production"
-export AZURE_STORAGE_CONTAINER_NAME="logs"
-export AZURE_STORAGE_BLOB_NAME="commerce-app.log.gz"
-export KAFKA_BROKERS="kafka-broker1:9092,kafka-broker2:9092"
-export KAFKA_TOPIC="Ingestion.RawLogs"
-export START_OFFSET="0"
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `BLOB_STATE_TOPIC` | Blob state topic name | No | `Ingestion.BlobState` |
+| `CONSUMER_GROUP` | Kafka consumer group | No | `ingestion-worker` |
+| `SHARDING_ENABLED` | Enable sharding | No | `false` |
+| `SHARDS_COUNT` | Total number of shards | No | `1` |
+| `SHARD_NUMBER` | This worker's shard number | No | `0` |
+| `MIN_DATE` | Minimum blob date filter | No | - |
+| `MAX_DATE` | Maximum blob date filter | No | - |
+| `SUBSCRIPTIONS` | Comma-separated subscriptions | No | - |
+| `ENVIRONMENTS` | Comma-separated environments | No | - |
+| `SELECTORS` | Comma-separated selector patterns | No | - |
+
+### Configuration Files
+
+You can also use YAML configuration files:
+
+#### CLI Mode Example (`configs/cli-example.yaml`)
+```yaml
+mode: cli
+cli:
+  subscription_id: "cp2"
+  environment: "P1"
+  container_name: "logs"
+  blob_name: "app-service.log.gz"
+  start_offset: 0
+kafka:
+  brokers: "localhost:9092"
+storage:
+  account_name: "${AZURE_STORAGE_ACCOUNT_NAME}"
+  access_key: "${AZURE_STORAGE_ACCESS_KEY}"
 ```
 
-## Message Format
-
-### Raw Log Messages
-
-Each log line is published as a separate Kafka message with the following structure:
-
-- **Key**: `{blobName}-{lineNumber}` (e.g., `commerce-app.log.gz-1`, `commerce-app.log.gz-2`)
-- **Value**: Raw log line content (as string)
-- **Topic**: `Ingestion.RawLogs`
-
-### Completion Messages
-
-After processing a blob segment, a completion message is sent with the following JSON structure:
-
-```json
-{
-  "blobName": "commerce-app.log.gz",
-  "processedFromOffset": 0,
-  "processedToEndOffset": 1048576,
-  "linesSent": 12543
-}
+#### Worker Mode Example (`configs/worker-example.yaml`)
+```yaml
+mode: worker
+worker:
+  blob_state_topic: "Ingestion.BlobState"
+  consumer_group: "ingestion-worker-shard-0"
+  filters:
+    min_date: "2024-01-01T00:00:00Z"
+    subscriptions: ["cp2", "cp3"]
+    environments: ["P1", "S1"]
+    selectors: ["apache-.*", "app-.*"]
+  sharding:
+    enabled: true
+    shards_count: 4
+    shard_number: 0
+  processing:
+    loop_interval: "30s"
+    max_concurrent_blobs: 5
 ```
-
-- **Key**: `{blobName}-offset{startOffset}-completion`
-- **Topic**: `Ingestion.RawLogs`
-
-## Features
-
-### Resumable Processing
-- Supports offset-based processing to resume from a specific position
-- Tracks blob size changes to handle growing log files
-- Completion messages enable downstream consumers to track progress
-
-### File Format Support
-- **Compressed Files**: Automatic gzip decompression
-- **Large Files**: Streaming processing with configurable buffer sizes
-- **Line-by-Line**: Each log line becomes a separate Kafka message
-
-### Error Handling
-- Graceful handling of connection failures
-- Retry logic for Kafka message delivery
-- Comprehensive logging for debugging and monitoring
-
-### Performance Features
-- **Buffered Reading**: 1MB buffer for efficient file processing
-- **Batch Progress Reporting**: Log progress every 1000 lines
-- **Producer Flushing**: Ensures all messages are delivered before completion
 
 ## Usage
 
-### Running the Service
+### CLI Mode (Backwards Compatibility)
 
 ```bash
-# Build the service
-go build -o ingest .
+# Using environment variables
+export INGEST_MODE=cli
+export SUBSCRIPTION_ID=cp2
+export ENVIRONMENT=P1
+export AZURE_STORAGE_CONTAINER_NAME=logs
+export AZURE_STORAGE_BLOB_NAME=app.log.gz
+export START_OFFSET=0
+./bin/ingest
 
-# Run with environment variables
-./ingest
+# Using command line flags
+./bin/ingest -mode=cli
+
+# Using configuration file
+./bin/ingest -config=configs/cli-example.yaml
 ```
 
-### Testing Kafka Connection
+### Worker Mode (Production)
 
 ```bash
-# Test connection to default localhost:9092
-./ingest test-kafka
+# Single worker processing all blobs
+export INGEST_MODE=worker
+./bin/ingest
 
-# Test connection to specific brokers
-./ingest test-kafka "broker1:9092,broker2:9092"
+# Sharded workers (run multiple instances)
+# Worker 1 (shard 0 of 4)
+export SHARDING_ENABLED=true
+export SHARDS_COUNT=4
+export SHARD_NUMBER=0
+export CONSUMER_GROUP=ingestion-worker-shard-0
+./bin/ingest
+
+# Worker 2 (shard 1 of 4)
+export SHARD_NUMBER=1
+export CONSUMER_GROUP=ingestion-worker-shard-1
+./bin/ingest
+
+# Using configuration file
+./bin/ingest -config=configs/worker-example.yaml
 ```
 
-### Docker Deployment
+### Testing
 
 ```bash
-# Build Docker image
-docker build -t commerce-logs-ingest .
+# Test Kafka connectivity
+./bin/ingest -test-kafka
 
-# Run with environment file
-docker run --env-file .env commerce-logs-ingest
+# Test with specific brokers
+./bin/ingest -test-kafka -brokers="broker1:9092,broker2:9092"
+```
+
+## Worker Mode Features
+
+### Filtering
+
+Workers can filter blobs based on:
+
+- **Date Range**: Process only blobs within specified date range
+- **Subscriptions**: Process only specific Azure subscriptions
+- **Environments**: Process only specific environments (P1, S1, etc.)
+- **Selectors**: Process only blobs matching regex patterns
+
+### Sharding
+
+Enable horizontal scaling by:
+
+1. Set `sharding.enabled: true`
+2. Configure `shards_count` (total workers)
+3. Set unique `shard_number` for each worker (0-based)
+4. Use different `consumer_group` for each worker
+
+Each worker processes only blobs where `hash(blobName) % shardsCount == shardNumber`.
+
+### Blob State Processing
+
+Workers:
+1. Consume blob state events from compacted topic
+2. Apply filters to determine relevant blobs
+3. Track ingestion progress per blob
+4. Process new/changed blobs automatically
+5. Remove fully processed closed blobs from monitoring
+
+## Building and Deployment
+
+### Development
+
+```bash
+# Build
+make build
+
+# Run tests
+make test
+
+# Run in CLI mode
+make run-cli
+
+# Run in worker mode  
+make run-worker
+
+# Format and lint
+make fmt lint
+```
+
+### Docker
+
+```bash
+# Build image
+make docker-build
+
+# Run CLI mode
+make docker-run-cli
+
+# Run worker mode
+make docker-run-worker
+```
+
+### Production Deployment
+
+```yaml
+# Kubernetes deployment example
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion-worker
+spec:
+  replicas: 4  # Number of shards
+  template:
+    spec:
+      containers:
+      - name: ingest
+        image: commerce-logs-ingest:latest
+        env:
+        - name: INGEST_MODE
+          value: "worker"
+        - name: SHARDING_ENABLED
+          value: "true"
+        - name: SHARDS_COUNT
+          value: "4"
+        - name: SHARD_NUMBER
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['shard-number']
 ```
 
 ## Monitoring
 
+### Metrics to Monitor
+
+- **Blob Processing Rate**: Blobs processed per minute
+- **Line Processing Rate**: Log lines ingested per second
+- **Kafka Delivery Success**: Message delivery confirmations
+- **Worker Health**: Individual shard status
+- **Lag Metrics**: Time between blob update and ingestion
+
 ### Log Output
 
-The service provides detailed logging including:
+The service provides structured logging:
 
-- **Connection Status**: Azure and Kafka connectivity
-- **Processing Progress**: Lines processed and batch updates
-- **Error Conditions**: Failed deliveries and connection issues
-- **Completion Status**: Successful processing confirmations
+```
+🚀 Starting ingestion worker (shard 0/4)
+📡 Starting blob state consumer
+🔄 Processing blob app.log.gz from offset 1024
+✅ Successfully processed blob app.log.gz
+```
 
-### Key Metrics to Monitor
-
-- **Lines Processed**: Total number of log lines ingested
-- **Processing Rate**: Lines per second throughput
-- **Kafka Delivery Success**: Message delivery confirmations
-- **Error Rate**: Failed message deliveries
-- **Blob Processing Time**: End-to-end processing duration
-
-## Error Scenarios
+## Troubleshooting
 
 ### Common Issues
 
-1. **Azure Storage Access**: Verify subscription ID and container permissions
-2. **Kafka Connectivity**: Check broker addresses and network connectivity
-3. **Large Files**: Monitor memory usage and adjust buffer sizes if needed
-4. **Incomplete Processing**: Check completion messages and restart from last offset
+1. **Azure Storage Access**: Verify credentials and container permissions
+2. **Kafka Connectivity**: Use `make test-kafka` to verify connection
+3. **Blob State Topic**: Ensure topic exists and is properly compacted
+4. **Sharding Conflicts**: Verify unique shard numbers and consumer groups
 
-### Recovery Procedures
+### Recovery
 
-1. **Restart from Offset**: Use `START_OFFSET` environment variable
-2. **Retry Failed Messages**: Review Kafka producer logs for delivery failures
-3. **Blob Size Changes**: Service automatically handles growing files
+- **Offset Reset**: Consumer will resume from last committed offset
+- **Failed Processing**: Check logs for specific blob processing errors
+- **Scaling**: Add/remove workers by adjusting replica count
 
-## Integration Points
+## Integration
 
 ### Upstream
-- **Azure Blob Storage**: Source of raw log files
-- **File Upload Process**: External process that creates/updates log files
+- **Blob Monitor**: Publishes blob state events
+- **Azure Storage**: Source of log files
 
-### Downstream
-- **Log Processing Pipeline**: Consumes from `Ingestion.RawLogs` topic
-- **Data Transformation**: Next stage processes and enriches raw log lines
-- **Analytics Systems**: May consume raw logs for immediate analysis
-
-## Development
-
-### Prerequisites
-- Go 1.19+
-- Access to Azure Storage account
-- Kafka cluster (local or remote)
-
-### Testing
-```bash
-# Run tests
-go test ./...
-
-# Test with local Kafka
-export KAFKA_BROKERS="localhost:9092"
-go run main.go test-kafka
-```
-
-### Building
-```bash
-# Local build
-go build -o ingest .
-
-# Cross-platform build
-GOOS=linux GOARCH=amd64 go build -o ingest-linux .
-``` 
+### Downstream  
+- **Log Processing Pipeline**: Consumes from `Ingestion.RawLogs`
+- **Monitoring Systems**: Monitor blob completion events 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 // MockProducer is a simple mock for testing
 type MockProducer struct {
+	mutex    sync.RWMutex
 	messages []MockMessage
 	events   chan kafka.Event
 }
@@ -33,20 +35,22 @@ func NewMockProducer() *MockProducer {
 }
 
 func (m *MockProducer) Produce(msg *kafka.Message, deliveryChan chan kafka.Event) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	m.messages = append(m.messages, MockMessage{
 		Topic: *msg.TopicPartition.Topic,
 		Key:   msg.Key,
 		Value: msg.Value,
 	})
 
-	// Send delivery confirmation
-	go func() {
-		m.events <- &kafka.Message{
+	// Send delivery confirmation synchronously for testing
+	if deliveryChan != nil {
+		deliveryChan <- &kafka.Message{
 			TopicPartition: msg.TopicPartition,
 			Key:            msg.Key,
 			Value:          msg.Value,
 		}
-	}()
+	}
 
 	return nil
 }
@@ -62,6 +66,8 @@ func (m *MockProducer) Flush(timeoutMs int) int {
 func (m *MockProducer) Close() {}
 
 func (m *MockProducer) GetProducedMessages() []MockMessage {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
 	return m.messages
 }
 
