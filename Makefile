@@ -100,7 +100,7 @@ dev-up:
 	docker compose up -d kafka kafdrop
 	@echo "⏳ Waiting for Kafka to be ready..."
 	@sleep 8
-	@$(MAKE) init-kafka
+	@/usr/bin/make init-kafka
 	@echo "✅ Development infrastructure running:"
 	@echo "   - Kafka: localhost:9092"
 	@echo "   - Kafdrop UI: http://localhost:9000"
@@ -149,7 +149,7 @@ wipe-topics:
 		fi; \
 		echo "✅ Topics deleted. New topics will be auto-created when needed."; \
 		echo "🔄 Recreating topics with proper configuration..."; \
-		$(MAKE) init-kafka; \
+		/usr/bin/make init-kafka; \
 	else \
 		echo "❌ Kafka container not running. Start with: make dev-up"; \
 	fi
@@ -167,7 +167,7 @@ wipe-data:
 	@echo "⏳ Waiting for Kafka to be ready..."
 	@sleep 8
 	@echo "🛠️  Initializing topics..."
-	@$(MAKE) init-kafka
+	@/usr/bin/make init-kafka
 	@echo "✅ Fresh Kafka environment ready!"
 	@sleep 2
 	@docker compose up -d kafdrop
