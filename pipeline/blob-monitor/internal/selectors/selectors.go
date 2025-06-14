@@ -5,6 +5,71 @@ import (
 	"strings"
 )
 
+// KubernetesBlobName represents the parsed structure of a Kubernetes log blob name
+// Format: {date}.{pod-name}_{namespace}_{container-name}-{container-id}.gz
+type KubernetesBlobName struct {
+	Date        string // YYYYMMDD
+	PodName     string // e.g., "apache2-igc-86888fc9d6-dzxxv"
+	Namespace   string // e.g., "default"
+	Container   string // e.g., "proxy"
+	ContainerID string // e.g., "516459e2fb42d75a47ab803c19a317c180dd3b9d3f715ef722ed1539734a22d7"
+	Valid       bool   // Whether the blob name follows the expected structure
+}
+
+// ParseKubernetesBlobName parses a blob name into its structural components
+func ParseKubernetesBlobName(blobName string) KubernetesBlobName {
+	result := KubernetesBlobName{Valid: false}
+
+	// Must end with .gz
+	if !strings.HasSuffix(blobName, ".gz") {
+		return result
+	}
+
+	// Remove .gz extension
+	nameWithoutExt := strings.TrimSuffix(blobName, ".gz")
+
+	// Find first dot (separates date from pod name)
+	dotIndex := strings.Index(nameWithoutExt, ".")
+	if dotIndex == -1 {
+		return result
+	}
+
+	result.Date = nameWithoutExt[:dotIndex]
+	remainder := nameWithoutExt[dotIndex+1:]
+
+	// Find first underscore (separates pod name from namespace_container)
+	underscoreIndex := strings.Index(remainder, "_")
+	if underscoreIndex == -1 {
+		return result
+	}
+
+	result.PodName = remainder[:underscoreIndex]
+	namespaceContainer := remainder[underscoreIndex+1:]
+
+	// Find last dash that separates container name from container ID
+	// We need the last dash because container names can have dashes (e.g., "hybris-autoscaler")
+	lastDashIndex := strings.LastIndex(namespaceContainer, "-")
+	if lastDashIndex == -1 {
+		return result
+	}
+
+	// Split namespace_container from container-id
+	namespaceContainerPart := namespaceContainer[:lastDashIndex]
+	result.ContainerID = namespaceContainer[lastDashIndex+1:]
+
+	// Find last underscore in namespace_container part
+	lastUnderscoreIndex := strings.LastIndex(namespaceContainerPart, "_")
+	if lastUnderscoreIndex == -1 {
+		return result
+	}
+
+	result.Namespace = namespaceContainerPart[:lastUnderscoreIndex]
+	result.Container = namespaceContainerPart[lastUnderscoreIndex+1:]
+	result.Valid = true
+
+	return result
+}
+
 // BlobSelector combines Azure prefix with predicate function for blob filtering
 type BlobSelector struct {
 	Name          string                     // Selector identifier
@@ -21,12 +86,16 @@ func GetBlobSelectors() map[string]*BlobSelector {
 		"apache-proxy": {
 			Name:          "apache-proxy",
 			DisplayName:   "Apache Proxy Service",
-			Description:   "Load balancer and proxy logs",
+			Description:   "HTTP request/response logs from Apache proxy containers",
 			AzurePrefix:   "kubernetes/",
-			ServicePrefix: ".apache2-igc",
+			ServicePrefix: ".apache2-igc-",
 			Predicate: func(blobName string) bool {
-				return strings.Contains(blobName, "_proxy-") &&
-					!strings.Contains(blobName, "cache-cleaner")
+				parsed := ParseKubernetesBlobName(blobName)
+				return parsed.Valid &&
+					parsed.Namespace == "default" &&
+					parsed.Container == "proxy" &&
+					strings.HasPrefix(parsed.PodName, "apache2-igc-") &&
+					!strings.HasPrefix(parsed.PodName, "apache2-igc-nat-")
 			},
 		},
 
@@ -37,8 +106,11 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".api-",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "cache-cleaner") &&
-					!strings.Contains(blobName, "log-forwarder")
+				parsed := ParseKubernetesBlobName(blobName)
+				return parsed.Valid &&
+					strings.HasPrefix(parsed.PodName, "api-") &&
+					parsed.Container != "cache-cleaner" &&
+					parsed.Container != "log-forwarder"
 			},
 		},
 
@@ -49,7 +121,10 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".backoffice",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "cache-cleaner")
+				parsed := ParseKubernetesBlobName(blobName)
+				return parsed.Valid &&
+					strings.HasPrefix(parsed.PodName, "backoffice") &&
+					parsed.Container != "cache-cleaner"
 			},
 		},
 
@@ -60,8 +135,11 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".backgroundprocessing",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "cache-cleaner") &&
-					!strings.Contains(blobName, "log-forwarder")
+				parsed := ParseKubernetesBlobName(blobName)
+				return parsed.Valid &&
+					strings.HasPrefix(parsed.PodName, "backgroundprocessing") &&
+					parsed.Container != "cache-cleaner" &&
+					parsed.Container != "log-forwarder"
 			},
 		},
 
@@ -72,7 +150,10 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".jsapps",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "cache-cleaner")
+				parsed := ParseKubernetesBlobName(blobName)
+				return parsed.Valid &&
+					strings.HasPrefix(parsed.PodName, "jsapps") &&
+					parsed.Container != "cache-cleaner"
 			},
 		},
 
@@ -83,7 +164,10 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".imageprocessing",
 			Predicate: func(blobName string) bool {
-				return !strings.Contains(blobName, "cache-cleaner")
+				parsed := ParseKubernetesBlobName(blobName)
+				return parsed.Valid &&
+					strings.HasPrefix(parsed.PodName, "imageprocessing") &&
+					parsed.Container != "cache-cleaner"
 			},
 		},
 
@@ -94,7 +178,9 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			AzurePrefix:   "kubernetes/",
 			ServicePrefix: ".zookeeper",
 			Predicate: func(blobName string) bool {
-				return true // No additional filtering needed
+				parsed := ParseKubernetesBlobName(blobName)
+				return parsed.Valid &&
+					strings.HasPrefix(parsed.PodName, "zookeeper")
 			},
 		},
 	}
