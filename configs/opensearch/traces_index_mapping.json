@@ -1,0 +1,61 @@
+{
+  "mappings": {
+    "properties": {
+      "trace_id": { "type": "keyword" },
+      "span_id": { "type": "keyword" },
+      "parent_span_id": { "type": "keyword" },
+      "name": { "type": "text" },
+      "kind": { "type": "keyword" },
+      "start_time_unix_nano": { "type": "long" },
+      "end_time_unix_nano": { "type": "long" },
+      "status": {
+        "properties": {
+          "code": { "type": "keyword" },
+          "message": { "type": "text" }
+        }
+      },
+      "attributes": {
+        "type": "object",
+        "dynamic": true,
+        "properties": {
+          "span.type": { "type": "keyword" },
+          "subscription.code": { "type": "keyword" },
+          "environment.code": { "type": "keyword" },
+          "service.name": { "type": "keyword" },
+          "thread.name": { "type": "keyword" },
+          "http.method": { "type": "keyword" },
+          "http.status_code": { "type": "integer" },
+          "user.ip": { "type": "ip" },
+          "message.id": { "type": "keyword" },
+          "log.level": { "type": "keyword" },
+          "log.message": { "type": "text" },
+          "k8s.namespace": { "type": "keyword" },
+          "k8s.pod_id": { "type": "keyword" },
+          "k8s.container_id": { "type": "keyword" },
+          "external.url": { "type": "text" },
+          "external.status_code": { "type": "integer" },
+          "job.name": { "type": "keyword" },
+          "task.name": { "type": "keyword" },
+          "stderr": { "type": "boolean" }
+        }
+      },
+      "embedding_vector": {
+        "type": "dense_vector",
+        "dims": 384,
+        "index": true,
+        "similarity": "cosine"
+      },
+      "resource": {
+        "properties": {
+          "service.version": { "type": "keyword" },
+          "host.name": { "type": "keyword" }
+        }
+      }
+    }
+  },
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1,
+    "knn": true
+  }
+}

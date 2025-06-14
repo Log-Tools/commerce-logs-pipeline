@@ -201,6 +201,17 @@ cd pipeline/config
 go test
 ```
 
+### OpenSearch Deployment
+
+A minimal OpenSearch setup is provided under `deployments/opensearch`. It includes a Docker compose file and an init container that uploads the trace index mapping from `configs/opensearch/traces_index_mapping.json`. Start it locally with:
+
+```bash
+docker compose -f deployments/opensearch/docker-compose.yml up
+```
+
+This brings up an OpenSearch node ready for pipeline experiments.
+
+
 ### Quick Development Workflow
 
 ```bash
