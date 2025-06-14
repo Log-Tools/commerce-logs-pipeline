@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  opensearch:
+    build: .
+    container_name: opensearch
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  init-index:
+    image: curlimages/curl:8.5.0
+    container_name: opensearch-init
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    volumes:
+      - ../../configs/opensearch:/mappings:ro
+    entrypoint: ["sh", "-c"]
+    command: >-
+      curl -s -XPUT http://opensearch:9200/_index_template/traces \
+        -H 'Content-Type: application/json' \
+        -d @/mappings/traces_index_mapping.json
+
+volumes:
+  opensearch-data:

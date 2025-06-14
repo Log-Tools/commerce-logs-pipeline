@@ -7,5 +7,7 @@ use (
 	./pipeline/config
 	./pipeline/events
 	./pipeline/ingest
+	./pipeline/traces
 	./tools/kafka-init
+	./tools/opensearch-init
 )

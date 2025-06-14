@@ -2,7 +2,7 @@
 .PHONY: help dev-up dev-down build test clean build-go clean-go test-go install-go status quick-start
 
 # Go modules
-MODULES := pipeline/blob-monitor pipeline/events pipeline/ingest
+MODULES := pipeline/blob-monitor pipeline/events pipeline/ingest pipeline/traces tools/opensearch-init
 
 # Default target
 help:
