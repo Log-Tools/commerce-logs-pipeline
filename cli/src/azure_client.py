@@ -54,11 +54,15 @@ def list_blobs(subscription_id, environment, container_name, prefix=None):
         
         blobs = []
         for blob in container_client.list_blobs(name_starts_with=prefix):
+            content_type = getattr(blob, 'content_type', None)
+            if not content_type:
+                content_type = getattr(getattr(blob, 'content_settings', None), 'content_type', None)
+
             blobs.append({
                 'name': blob.name,
                 'size': blob.size,
                 'last_modified': blob.last_modified,
-                'content_type': getattr(blob, 'content_type', getattr(blob, 'content_settings', {}).get('content_type', None) if hasattr(blob, 'content_settings') else None),
+                'content_type': content_type,
                 'etag': blob.etag
             })
         return blobs

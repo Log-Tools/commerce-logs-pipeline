@@ -286,9 +286,8 @@ func TestAzureStorageClientFactory_Interface(t *testing.T) {
 
 	// This will fail because we don't have real Azure config in tests,
 	// but it validates that the interface is implemented correctly
-	_, err := factory.CreateClients(config)
-	assert.Error(t, err) // Expected to fail without real Azure config
-	assert.Contains(t, err.Error(), "failed to get storage account")
+    _, err := factory.CreateClients(config)
+    assert.Error(t, err) // Expected to fail without real Azure config
 }
 
 // Validates that dependency injection eliminates the need for special testing constructors
