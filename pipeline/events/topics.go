@@ -12,6 +12,12 @@ const (
 	// TopicRawApplicationLogs contains application log lines extracted from blobs
 	TopicRawApplicationLogs = "Raw.ApplicationLogs"
 
+	// TopicExtractedApplication contains structured application log events
+	TopicExtractedApplication = "Extracted.Application"
+
+	// TopicExtractionErrors contains extraction error events
+	TopicExtractionErrors = "Extraction.Errors"
+
 	// TopicState contains pipeline state and completion events
 	TopicState = "Ingestion.State"
 

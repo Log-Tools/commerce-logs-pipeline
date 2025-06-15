@@ -2,7 +2,7 @@
 .PHONY: help dev-up dev-down build test clean build-go clean-go test-go install-go status quick-start
 	
 	# Go modules
-	MODULES := pipeline/blob-monitor pipeline/events pipeline/ingest pipeline/traces tools/opensearch-init
+	MODULES := pipeline/blob-monitor pipeline/events pipeline/ingest pipeline/extraction pipeline/traces tools/opensearch-init
 	
 	# Default target
 help:
@@ -18,6 +18,8 @@ help:
 	@echo "  make run-blob-monitor Run blob monitor with example config"
 	@echo "  make test-blob-monitor Run blob monitor tests only"
 	@echo "  make run-ingest      Run ingestion pipeline (requires env vars)"
+	@echo "  make run-extraction  Run extraction service with default config"
+	@echo "  make reset-extraction Reset extraction phase for reprocessing"
 	@echo ""
 	@echo "Development (recommended):"
 	@echo "  make quick-start     Complete fresh setup (stop→clean→start→init)"
@@ -89,6 +91,14 @@ run-ingest:
 	@echo "   SUBSCRIPTION_ID, ENVIRONMENT, AZURE_STORAGE_CONTAINER_NAME"
 	@echo "   AZURE_STORAGE_BLOB_NAME, KAFKA_BROKERS, KAFKA_TOPIC"
 	cd pipeline/ingest && go run .
+
+run-extraction:
+	@echo "🔄 Starting extraction service..."
+	cd pipeline/extraction && go run cmd/extraction/main.go configs/config.yaml
+
+reset-extraction:
+	@echo "🔄 Delegating to extraction module..."
+	cd pipeline/extraction && make reset-extraction
 
 # Convenience aliases
 build: build-go

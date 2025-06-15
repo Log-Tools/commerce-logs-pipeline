@@ -1,0 +1,62 @@
+# Application Logs Extraction Service Configuration
+# This is an example configuration - update values for your environment
+
+kafka:
+  # Kafka broker addresses
+  brokers: "localhost:9092"
+  
+  # Input topic containing raw application logs
+  input_topic: "Raw.ApplicationLogs"
+  
+  # Output topic for extracted structured logs
+  output_topic: "Extracted.Application"
+  
+  # Error topic for extraction errors
+  error_topic: "Extraction.Errors"
+  
+  # Consumer group ID for this service
+  consumer_group: "extraction-service"
+  
+  # Batch size for processing
+  batch_size: 100
+  
+  # Producer flush timeout in milliseconds
+  flush_timeout_ms: 5000
+  
+  # Additional Kafka consumer configuration
+  consumer_config:
+    auto.offset.reset: "earliest"
+    enable.auto.commit: "false"
+    session.timeout.ms: 30000
+    heartbeat.interval.ms: 3000
+  
+  # Additional Kafka producer configuration  
+  producer_config:
+    acks: "all"
+    retries: 2147483647
+    enable.idempotence: "true"
+    compression.type: "snappy"
+
+processing:
+  # Maximum number of concurrent processing goroutines
+  max_concurrency: 12
+  
+  # Enable validation of extracted logs
+  enable_validation: true
+  
+  # Skip invalid logs instead of sending error events
+  # Set to true to ignore invalid logs, false to send error events
+  skip_invalid_logs: false
+  
+  # Log parsing errors to console (for debugging only)
+  log_parse_errors: false
+
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  
+  # Enable metrics collection and reporting
+  enable_metrics: true
+  
+  # Metrics reporting interval in seconds
+  metrics_interval: 60 

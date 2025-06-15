@@ -54,6 +54,8 @@ environments:
     selectors:
       - "apache-proxy"
       - "api"
+      - "backoffice"
+      - "background-processing"
 
   # Staging Environment (uncomment to enable)
   # - subscription: "cp2" 

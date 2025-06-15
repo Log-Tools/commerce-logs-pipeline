@@ -6,6 +6,7 @@ use (
 	./pipeline/blob-monitor
 	./pipeline/config
 	./pipeline/events
+	./pipeline/extraction
 	./pipeline/ingest
 	./pipeline/traces
 	./tools/kafka-init

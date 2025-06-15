@@ -31,6 +31,30 @@ This document describes the design of the data processing pipeline that produces
   * `Extracted.Application`
 * Extracted logs are enriched with metadata like timestamps, service name, and container identifiers
 
+#### Message Partitioning and Ordering
+
+**Critical Design Requirement**: Log messages must maintain their original sequential ordering for accurate trace reconstruction and timeline analysis.
+
+**Partitioning Strategy**:
+- **Ingestion Phase**: Uses FNV32a hash of blob name to determine partition
+  - `partition = fnv32a(blobName) % partitionCount`
+  - Raw logs from the same blob are guaranteed to go to the same partition
+  - Messages within a partition maintain strict ordering (line-1, line-2, line-3...)
+- **Extraction Phase**: Replicates the exact same FNV32a hash algorithm
+  - Extracts blob name from message key: `{subscription}:{environment}:{eventType}:{blobName}`
+  - Calculates `partition = fnv32a(blobName) % 12` (same as ingestion)
+  - **Critical**: Must NOT use Kafka's default key-based partitioning (different algorithm)
+  - **Result**: Perfect ordering preservation across ingestion → extraction phases
+
+**Message Key Format**: `{subscription}:{environment}:{eventType}:{blobName}`
+- Example: `cp2:D1:line-42:20250615.api-695cfd5f68-jmhq5_default_platform-hash.gz`
+- Blob name portion drives consistent partitioning across all pipeline phases
+
+**Why This Matters**:
+- Log sequence integrity is essential for request correlation
+- Out-of-order processing would break thread-based and time-based correlations
+- Maintaining partition consistency ensures downstream correlators can use local state efficiently
+
 ### 3. Linking / Correlation Services
 
 Each correlator processes extracted logs and emits **partial span events** to the `Spans` topic:

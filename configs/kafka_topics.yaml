@@ -8,8 +8,14 @@ topics:
     segment.ms: 60000          # 1-minute segments in dev for quick compaction
     min.cleanable.dirty.ratio: 0.01
   Raw.ProxyLogs:
-    partitions: 1
+    partitions: 12
     cleanup.policy: delete
   Raw.ApplicationLogs:
-    partitions: 1
+    partitions: 12
+    cleanup.policy: delete
+  Extracted.Application:
+    partitions: 12
+    cleanup.policy: delete
+  Extraction.Errors:
+    partitions: 3
     cleanup.policy: delete
