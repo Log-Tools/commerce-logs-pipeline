@@ -75,6 +75,11 @@ func (m *MockExtractor) ExtractLog(rawLine string, source events.LogSource) (int
 	return args.Get(0), args.Error(1)
 }
 
+func (m *MockExtractor) ExtractProxyLog(rawLine string, source events.LogSource) (interface{}, error) {
+	args := m.Called(rawLine, source)
+	return args.Get(0), args.Error(1)
+}
+
 func (m *MockExtractor) ValidateExtractedLog(log interface{}) error {
 	args := m.Called(log)
 	return args.Error(0)

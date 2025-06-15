@@ -69,8 +69,10 @@ reset-extraction:
 	@echo "🔄 Resetting extraction phase for reprocessing..."
 	@echo "⚠️  This will:"
 	@echo "   - Clear Extracted.Application topic"
+	@echo "   - Clear Extracted.Proxy topic"
 	@echo "   - Clear Extraction.Errors topic"  
-	@echo "   - Reset consumer group 'extraction-service' to beginning of Raw.ApplicationLogs"
+	@echo "   - Reset consumer group 'extraction-application' to beginning of Raw.ApplicationLogs"
+	@echo "   - Reset consumer group 'extraction-proxy' to beginning of Raw.ProxyLogs"
 	@echo ""
 	@if ! docker ps | grep -q kafka; then \
 		echo "❌ Kafka container not running. Start with: make dev-up"; \
@@ -80,15 +82,17 @@ reset-extraction:
 	@echo ""
 	@echo "🗑️  Clearing extraction output topics..."
 	@docker exec kafka kafka-topics --bootstrap-server localhost:9092 --delete --topic Extracted.Application 2>/dev/null || echo "   (topic Extracted.Application doesn't exist)"
+	@docker exec kafka kafka-topics --bootstrap-server localhost:9092 --delete --topic Extracted.Proxy 2>/dev/null || echo "   (topic Extracted.Proxy doesn't exist)"
 	@docker exec kafka kafka-topics --bootstrap-server localhost:9092 --delete --topic Extraction.Errors 2>/dev/null || echo "   (topic Extraction.Errors doesn't exist)"
-	@echo "🔄 Resetting consumer group offset..."
-	@docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9092 --group extraction-service --reset-offsets --topic Raw.ApplicationLogs --to-earliest --execute 2>/dev/null || echo "   (consumer group doesn't exist yet)"
+	@echo "🔄 Resetting consumer group offsets..."
+	@docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9092 --group extraction-application --reset-offsets --topic Raw.ApplicationLogs --to-earliest --execute 2>/dev/null || echo "   (consumer group extraction-application doesn't exist yet)"
+	@docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9092 --group extraction-proxy --reset-offsets --topic Raw.ProxyLogs --to-earliest --execute 2>/dev/null || echo "   (consumer group extraction-proxy doesn't exist yet)"
 	@echo "🛠️  Recreating topics with proper configuration..."
 	@sleep 2
 	@cd ../../ && make init-kafka
 	@echo "✅ Extraction reset complete!"
 	@echo "   - All extraction output cleared"
-	@echo "   - Consumer will start from beginning of Raw.ApplicationLogs"
+	@echo "   - Both consumers will start from beginning of their respective topics"
 	@echo "   - Ready to reprocess all logs"
 
 reset-dry-run:
@@ -97,18 +101,21 @@ reset-dry-run:
 	@echo "📊 Current state:"
 	@if docker ps | grep -q kafka; then \
 		echo "   Topics that would be deleted:"; \
-		docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list | grep -E "(Extracted\.Application|Extraction\.Errors)" | sed 's/^/     - /' || echo "     (no extraction topics found)"; \
+		docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list | grep -E "(Extracted\.Application|Extracted\.Proxy|Extraction\.Errors)" | sed 's/^/     - /' || echo "     (no extraction topics found)"; \
 		echo "   Consumer group offsets:"; \
-		docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group extraction-service 2>/dev/null | grep Raw.ApplicationLogs | sed 's/^/     /' || echo "     (no consumer group found)"; \
+		docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group extraction-application 2>/dev/null | grep Raw.ApplicationLogs | sed 's/^/     /' || echo "     (no extraction-application consumer group found)"; \
+		docker exec kafka kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group extraction-proxy 2>/dev/null | grep Raw.ProxyLogs | sed 's/^/     /' || echo "     (no extraction-proxy consumer group found)"; \
 	else \
 		echo "   ❌ Kafka not running"; \
 	fi
 	@echo ""
 	@echo "🔄 Actions that would be performed:"
 	@echo "   1. Delete topic: Extracted.Application"
-	@echo "   2. Delete topic: Extraction.Errors"
-	@echo "   3. Reset consumer group 'extraction-service' to earliest offset on Raw.ApplicationLogs"
-	@echo "   4. Recreate topics with proper configuration"
+	@echo "   2. Delete topic: Extracted.Proxy"
+	@echo "   3. Delete topic: Extraction.Errors"
+	@echo "   4. Reset consumer group 'extraction-application' to earliest offset on Raw.ApplicationLogs"
+	@echo "   5. Reset consumer group 'extraction-proxy' to earliest offset on Raw.ProxyLogs"
+	@echo "   6. Recreate topics with proper configuration"
 
 # Utility targets
 help:

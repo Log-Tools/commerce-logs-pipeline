@@ -60,6 +60,7 @@ type RawInstant struct {
 // RawKubernetes represents the Kubernetes metadata in the raw JSON
 type RawKubernetes struct {
 	PodName string `json:"pod_name"`
+	PodIP   string `json:"pod_ip,omitempty"`
 }
 
 // HTTPRequestLog represents structured HTTP request/access log data
@@ -154,4 +155,49 @@ type ExtractionError struct {
 type ExtractedLog struct {
 	HTTPRequest    *HTTPRequestLog `json:"http_request,omitempty"`
 	ApplicationLog *ApplicationLog `json:"application_log,omitempty"`
+}
+
+// ProxyLog represents structured proxy/load balancer log data
+type ProxyLog struct {
+	// Timestamp in nanoseconds
+	TimestampNanos int64 `json:"ts_ns" avro:"ts_ns"`
+
+	// HTTP method (GET, POST, PUT, etc.)
+	Method string `json:"method" avro:"method"`
+
+	// Request path/URI
+	Path string `json:"path" avro:"path"`
+
+	// HTTP status code
+	StatusCode int `json:"status_code" avro:"status_code"`
+
+	// Response time in milliseconds
+	ResponseTimeMs int64 `json:"response_time_ms" avro:"response_time_ms"`
+
+	// Response size in bytes
+	BytesSent int64 `json:"bytes_sent" avro:"bytes_sent"`
+
+	// Client IP address (original client, not proxy)
+	ClientIP string `json:"client_ip" avro:"client_ip"`
+
+	// Local server name (proxy server name)
+	LocalServerName string `json:"local_server_name" avro:"local_server_name"`
+
+	// Remote user (if available)
+	RemoteUser string `json:"remote_user,omitempty" avro:"remote_user"`
+
+	// HTTP Referer header
+	Referer string `json:"referer,omitempty" avro:"referer"`
+
+	// User-Agent header
+	UserAgent string `json:"user_agent,omitempty" avro:"user_agent"`
+
+	// Cache status (if available)
+	CacheStatus string `json:"cache_status,omitempty" avro:"cache_status"`
+
+	// Kubernetes pod name
+	PodName string `json:"pod_name" avro:"pod_name"`
+
+	// Kubernetes pod IP
+	PodIP string `json:"pod_ip,omitempty" avro:"pod_ip"`
 }

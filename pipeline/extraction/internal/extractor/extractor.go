@@ -23,8 +23,10 @@ func NewExtractor() *Extractor {
 	// Regex to extract service name from pod names
 	serviceRegex := regexp.MustCompile(`^([a-z-]+?)(?:-[a-f0-9]+)?-[a-z0-9]+$`)
 
-	// Regex to parse HTTP request line: "METHOD /path HTTP/1.1"
-	requestLineRegex := regexp.MustCompile(`^([A-Z]+)\s+([^\s]+)\s+HTTP/[\d.]+$`)
+	// Regex to parse request line: "METHOD /path PROTOCOL/1.1"
+	// Allow underscores and other characters in method names to capture non-standard methods
+	// Capture protocol to filter out non-HTTP protocols (RTSP, etc.)
+	requestLineRegex := regexp.MustCompile(`^([A-Z_]+)\s+([^\s]+)\s+([A-Z]+)/[\d.]+$`)
 
 	// Regex to extract log level from container log messages
 	logLevelRegex := regexp.MustCompile(`(?i)\b(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\b`)
@@ -75,7 +77,15 @@ func (e *Extractor) extractFromStructuredLog(rawLog *events.RawApplicationLogLin
 	isAccessLog := e.isHTTPRequestLog(rawLog.Logs)
 
 	if isAccessLog {
-		return e.extractHTTPRequestLog(rawLog, source, rawLine)
+		result, err := e.extractHTTPRequestLog(rawLog, source, rawLine)
+		if err != nil {
+			return nil, err
+		}
+		// Handle the case where extractHTTPRequestLog returns nil for malformed requests
+		if result == nil {
+			return nil, nil
+		}
+		return result, nil
 	} else {
 		result, err := e.extractApplicationLog(rawLog, source)
 		if err != nil {
@@ -216,6 +226,22 @@ func (e *Extractor) extractLogLevel(message string) string {
 	return "INFO" // Default fallback
 }
 
+// isStandardHTTPMethod checks if the given method is a standard HTTP method
+func (e *Extractor) isStandardHTTPMethod(method string) bool {
+	standardMethods := map[string]bool{
+		"GET":     true,
+		"POST":    true,
+		"PUT":     true,
+		"DELETE":  true,
+		"HEAD":    true,
+		"OPTIONS": true,
+		"PATCH":   true,
+		"TRACE":   true,
+		"CONNECT": true,
+	}
+	return standardMethods[method]
+}
+
 // extractHTTPRequestLog extracts structured HTTP request data
 func (e *Extractor) extractHTTPRequestLog(rawLog *events.RawApplicationLogLine, source events.LogSource, rawLine string) (*events.HTTPRequestLog, error) {
 	// Extract timestamp - try timeMillis first, then extract from root level for Apache logs
@@ -257,13 +283,32 @@ func (e *Extractor) extractHTTPRequestLog(rawLog *events.RawApplicationLogLine, 
 			return nil, fmt.Errorf("missing or invalid requestLine in contextMap")
 		}
 
-		// Parse method and path from request line
+		// Handle malformed/incomplete requests where requestLine is "-"
+		if requestLine == "-" {
+			// Skip malformed requests - return nil to indicate no event should be generated
+			return nil, nil
+		}
+
+		// Parse method, path, and protocol from request line
 		matches := e.requestLineRegex.FindStringSubmatch(requestLine)
-		if len(matches) < 3 {
+		if len(matches) < 4 {
 			return nil, fmt.Errorf("failed to parse request line: %s", requestLine)
 		}
 		method = matches[1]
 		path = matches[2]
+		protocol := matches[3]
+
+		// Skip non-HTTP protocols (e.g., RTSP, FTP, etc.)
+		if protocol != "HTTP" {
+			// Skip non-HTTP protocols - return nil to indicate no event should be generated
+			return nil, nil
+		}
+
+		// Skip non-standard HTTP methods (e.g., SSTP_DUPLEX_POST, etc.)
+		if !e.isStandardHTTPMethod(method) {
+			// Skip non-standard methods - return nil to indicate no event should be generated
+			return nil, nil
+		}
 
 		// Extract status code
 		if sc, ok := ctx["statusCode"]; ok {
@@ -323,13 +368,32 @@ func (e *Extractor) extractHTTPRequestLog(rawLog *events.RawApplicationLogLine, 
 			return nil, fmt.Errorf("missing requestFirstLine in Apache access log")
 		}
 
-		// Parse method and path from request line
+		// Handle malformed/incomplete requests where requestFirstLine is "-"
+		if requestLine == "-" {
+			// Skip malformed requests - return nil to indicate no event should be generated
+			return nil, nil
+		}
+
+		// Parse method, path, and protocol from request line
 		matches := e.requestLineRegex.FindStringSubmatch(requestLine)
-		if len(matches) < 3 {
+		if len(matches) < 4 {
 			return nil, fmt.Errorf("failed to parse Apache request line: %s", requestLine)
 		}
 		method = matches[1]
 		path = matches[2]
+		protocol := matches[3]
+
+		// Skip non-HTTP protocols (e.g., RTSP, FTP, etc.)
+		if protocol != "HTTP" {
+			// Skip non-HTTP protocols - return nil to indicate no event should be generated
+			return nil, nil
+		}
+
+		// Skip non-standard HTTP methods (e.g., SSTP_DUPLEX_POST, etc.)
+		if !e.isStandardHTTPMethod(method) {
+			// Skip non-standard methods - return nil to indicate no event should be generated
+			return nil, nil
+		}
 
 		// Extract status code
 		if rawLog.Logs.Status != "" {
@@ -478,7 +542,7 @@ func (e *Extractor) ValidateApplicationLog(log *events.ApplicationLog) error {
 	return nil
 }
 
-// ValidateExtractedLog validates either HTTP request or application log
+// ValidateExtractedLog validates HTTP request, application, or proxy log
 func (e *Extractor) ValidateExtractedLog(log interface{}) error {
 	if log == nil {
 		return fmt.Errorf("cannot validate nil log")
@@ -489,7 +553,280 @@ func (e *Extractor) ValidateExtractedLog(log interface{}) error {
 		return e.ValidateHTTPRequestLog(l)
 	case *events.ApplicationLog:
 		return e.ValidateApplicationLog(l)
+	case *events.ProxyLog:
+		return e.ValidateProxyLog(l)
 	default:
 		return fmt.Errorf("unknown log type: %T", log)
 	}
+}
+
+// extractProxyLog extracts structured proxy log data from Apache access log format
+func (e *Extractor) extractProxyLog(rawLog *events.RawApplicationLogLine, source events.LogSource, rawLine string) (*events.ProxyLog, error) {
+	// Extract timestamp - try timeMillis first, then extract from root level for Apache logs
+	var timestampNanos int64
+	if rawLog.Logs.TimeMillis != nil {
+		timestampNanos = *rawLog.Logs.TimeMillis * 1e6
+	} else {
+		// Apache access logs don't have timeMillis, extract from root level timestamp
+		var containerLog events.RawContainerLogLine
+		if err := json.Unmarshal([]byte(rawLine), &containerLog); err == nil {
+			// Parse timestamp from root level @timestamp or time field
+			timestampNanos, err = e.parseContainerLogTimestamp(&containerLog)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse Apache proxy log timestamp: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to parse Apache proxy log for timestamp: %w", err)
+		}
+	}
+
+	// Extract pod name
+	podName := ""
+	podIP := ""
+	if rawLog.Kubernetes != nil {
+		podName = rawLog.Kubernetes.PodName
+		podIP = rawLog.Kubernetes.PodIP
+	}
+
+	// Extract proxy request data - handle both contextMap format and Apache format
+	var method, path, clientIP, localServerName, remoteUser, referer, userAgent, cacheStatus string
+	var statusCode int
+	var bytesSent, responseTimeMs int64
+
+	if rawLog.Logs.ContextMap != nil {
+		// Traditional format with contextMap (unlikely for proxy logs, but handle it)
+		ctx := rawLog.Logs.ContextMap
+
+		// Extract request line (METHOD /path HTTP/1.1)
+		requestLine, ok := ctx["requestLine"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid requestLine in contextMap")
+		}
+
+		// Parse method, path, and protocol from request line
+		matches := e.requestLineRegex.FindStringSubmatch(requestLine)
+		if len(matches) < 4 {
+			return nil, fmt.Errorf("failed to parse request line: %s", requestLine)
+		}
+		method = matches[1]
+		path = matches[2]
+		protocol := matches[3]
+
+		// Skip non-HTTP protocols (e.g., RTSP, FTP, etc.)
+		if protocol != "HTTP" {
+			// Skip non-HTTP protocols - return nil to indicate no event should be generated
+			return nil, nil
+		}
+
+		// Skip non-standard HTTP methods (e.g., SSTP_DUPLEX_POST, etc.)
+		if !e.isStandardHTTPMethod(method) {
+			// Skip non-standard methods - return nil to indicate no event should be generated
+			return nil, nil
+		}
+
+		// Extract other fields from contextMap
+		if sc, ok := ctx["statusCode"]; ok {
+			switch v := sc.(type) {
+			case float64:
+				statusCode = int(v)
+			case int:
+				statusCode = v
+			case string:
+				if parsed, err := strconv.Atoi(v); err == nil {
+					statusCode = parsed
+				}
+			}
+		}
+
+		if bs, ok := ctx["bytesSent"]; ok {
+			switch v := bs.(type) {
+			case float64:
+				bytesSent = int64(v)
+			case int:
+				bytesSent = int64(v)
+			case int64:
+				bytesSent = v
+			case string:
+				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+					bytesSent = parsed
+				}
+			}
+		}
+
+		if rt, ok := ctx["responseTime"]; ok {
+			switch v := rt.(type) {
+			case float64:
+				responseTimeMs = int64(v)
+			case int:
+				responseTimeMs = int64(v)
+			case int64:
+				responseTimeMs = v
+			case string:
+				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+					responseTimeMs = parsed
+				}
+			}
+		}
+
+		if rh, ok := ctx["remoteHost"].(string); ok {
+			clientIP = rh
+		}
+	} else {
+		// Apache proxy log format - fields are directly in logs object
+		// Extract request line from requestFirstLine field
+		requestLine := rawLog.Logs.RequestFirstLine
+		if requestLine == "" {
+			return nil, fmt.Errorf("missing requestFirstLine in Apache proxy log")
+		}
+
+		// Handle malformed/incomplete requests where requestFirstLine is "-"
+		if requestLine == "-" {
+			// Skip malformed requests - return nil to indicate no event should be generated
+			return nil, nil
+		} else {
+			// Parse method, path, and protocol from request line
+			matches := e.requestLineRegex.FindStringSubmatch(requestLine)
+			if len(matches) < 4 {
+				return nil, fmt.Errorf("failed to parse Apache proxy request line: %s", requestLine)
+			}
+			method = matches[1]
+			path = matches[2]
+			protocol := matches[3]
+
+			// Skip non-HTTP protocols (e.g., RTSP, FTP, etc.)
+			if protocol != "HTTP" {
+				// Skip non-HTTP protocols - return nil to indicate no event should be generated
+				return nil, nil
+			}
+
+			// Skip non-standard HTTP methods (e.g., SSTP_DUPLEX_POST, etc.)
+			if !e.isStandardHTTPMethod(method) {
+				// Skip non-standard methods - return nil to indicate no event should be generated
+				return nil, nil
+			}
+		}
+
+		// Extract status code
+		if rawLog.Logs.Status != "" {
+			if parsed, err := strconv.Atoi(rawLog.Logs.Status); err == nil {
+				statusCode = parsed
+			}
+		}
+
+		// Extract bytes sent
+		if rawLog.Logs.Bytes != "" && rawLog.Logs.Bytes != "-" {
+			if parsed, err := strconv.ParseInt(rawLog.Logs.Bytes, 10, 64); err == nil {
+				bytesSent = parsed
+			}
+		}
+
+		// Extract response time
+		if rawLog.Logs.ResponseTime != "" {
+			if parsed, err := strconv.ParseInt(rawLog.Logs.ResponseTime, 10, 64); err == nil {
+				responseTimeMs = parsed
+			}
+		}
+
+		// Extract proxy-specific fields
+		clientIP = rawLog.Logs.RemoteHost
+		localServerName = rawLog.Logs.LocalServerName
+		remoteUser = rawLog.Logs.RemoteUser
+		referer = rawLog.Logs.Referer
+		userAgent = rawLog.Logs.UserAgent
+		cacheStatus = rawLog.Logs.CacheStatus
+	}
+
+	return &events.ProxyLog{
+		TimestampNanos:  timestampNanos,
+		Method:          method,
+		Path:            path,
+		StatusCode:      statusCode,
+		ResponseTimeMs:  responseTimeMs,
+		BytesSent:       bytesSent,
+		ClientIP:        clientIP,
+		LocalServerName: localServerName,
+		RemoteUser:      remoteUser,
+		Referer:         referer,
+		UserAgent:       userAgent,
+		CacheStatus:     cacheStatus,
+		PodName:         podName,
+		PodIP:           podIP,
+	}, nil
+}
+
+// ValidateProxyLog validates a proxy log
+func (e *Extractor) ValidateProxyLog(log *events.ProxyLog) error {
+	if log == nil {
+		return fmt.Errorf("cannot validate nil proxy log")
+	}
+	if log.TimestampNanos <= 0 {
+		return fmt.Errorf("invalid timestamp: %d", log.TimestampNanos)
+	}
+	if log.Method == "" {
+		return fmt.Errorf("missing HTTP method")
+	}
+	if log.Path == "" {
+		return fmt.Errorf("missing request path")
+	}
+	if log.PodName == "" {
+		return fmt.Errorf("missing pod name")
+	}
+	return nil
+}
+
+// ExtractProxyLog extracts structured proxy log data specifically from Raw.ProxyLogs topic
+func (e *Extractor) ExtractProxyLog(rawLine string, source events.LogSource) (interface{}, error) {
+	// First, try to parse as structured application log (Format 1)
+	var appLog events.RawApplicationLogLine
+	if err := json.Unmarshal([]byte(rawLine), &appLog); err == nil && appLog.Logs != nil {
+		// Check if this is actually a proxy access log or a regular container log
+		if e.isProxyLog(appLog.Logs) {
+			// Format 1: Structured Apache access logs with proxy-specific fields
+			result, err := e.extractProxyLog(&appLog, source, rawLine)
+			if err != nil {
+				return nil, err
+			}
+			// Handle the case where extractProxyLog returns nil for malformed requests
+			if result == nil {
+				return nil, nil
+			}
+			return result, nil
+		} else {
+			// Format 1: Regular application log from proxy container (startup, errors, etc.)
+			return e.extractApplicationLog(&appLog, source)
+		}
+	}
+
+	// If that fails, try container log format (Format 2) - proxy container logs
+	var containerLog events.RawContainerLogLine
+	if err := json.Unmarshal([]byte(rawLine), &containerLog); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	// Format 2: Container logs from proxy service (startup, error logs, etc.)
+	result, err := e.extractFromContainerLog(&containerLog, source)
+	if err != nil {
+		return nil, err
+	}
+	// Handle the case where extractFromContainerLog returns nil for empty messages
+	if result == nil {
+		return nil, nil
+	}
+	return result, nil
+}
+
+// isProxyLog determines if a log should be processed as a proxy log
+// This is primarily determined by the topic it comes from (Raw.ProxyLogs)
+func (e *Extractor) isProxyLog(logs *events.RawLogs) bool {
+	// Check for Apache proxy log format (has requestFirstLine and proxy-specific fields)
+	if logs.RequestFirstLine != "" && logs.LocalServerName != "" {
+		return true
+	}
+
+	// Check for proxy-specific fields that distinguish it from regular HTTP request logs
+	if logs.LocalServerName != "" || logs.CacheStatus != "" {
+		return true
+	}
+
+	return false
 }

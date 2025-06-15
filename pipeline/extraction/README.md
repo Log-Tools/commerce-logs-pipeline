@@ -1,10 +1,191 @@
-# Application Logs Extraction Service
+# Application and Proxy Logs Extraction Service
 
-A scalable Kafka stream processor that extracts structured data from raw application logs, converting JSON-formatted log entries into structured events for downstream processing.
+A scalable Kafka stream processor that extracts structured data from raw application and proxy logs, converting JSON-formatted log entries into structured events for downstream processing.
 
 ## Project Description
 
-The extraction service processes raw application logs from Kubernetes environments and transforms them into structured events. It parses JSON log entries, extracts essential fields like timestamps, log levels, messages, and exception information, and publishes them to Kafka topics for further processing in the logs-derived trace pipeline.
+The extraction service processes raw logs from Kubernetes environments and transforms them into structured events. It handles two types of logs with separate worker pools:
+
+1. **Application Logs** - From Raw.ApplicationLogs topic → Extracted.Application
+2. **Proxy Logs** - From Raw.ProxyLogs topic → Extracted.Proxy
+
+Both services run concurrently with independent worker pools for optimal performance and resource utilization.
+
+## Features
+
+1. **Dual Log Type Processing**: Handles both application and proxy logs simultaneously
+2. **Separate Worker Pools**: Independent concurrency control for each log type
+3. **Concurrent Processing**: Worker goroutines with configurable concurrency limits
+4. **Backpressure Handling**: Proper flow control without message dropping  
+5. **Error Handling**: Comprehensive error tracking and reporting
+6. **Validation**: Optional schema validation for extracted logs
+7. **Kafka Integration**: Native Kafka producer/consumer with proper partitioning
+8. **Ordering Preservation**: Maintains log sequence integrity using consistent partitioning
+9. **Graceful Shutdown**: Clean service termination with proper resource cleanup
+10. **Metrics Collection**: Processing statistics and performance monitoring
+
+## Architecture
+
+### Worker Pool Structure
+
+```
+┌─────────────────┐    ┌─────────────────┐
+│ Application     │    │ Proxy           │
+│ Worker Pool     │    │ Worker Pool     │
+│ (12 workers)    │    │ (12 workers)    │
+├─────────────────┤    ├─────────────────┤
+│ Raw.Application │ -> │ Raw.ProxyLogs   │
+│ Logs            │    │                 │
+├─────────────────┤    ├─────────────────┤
+│ Extracted.      │    │ Extracted.      │
+│ Application     │    │ Proxy           │
+└─────────────────┘    └─────────────────┘
+           │                    │
+           └────────┬───────────┘
+                    │
+            ┌───────▼────────┐
+            │ Extraction.    │
+            │ Errors         │
+            └────────────────┘
+```
+
+### Processing Flow
+
+1. **Concurrent Consumption**: Both services consume from their respective topics simultaneously
+2. **Dedicated Extraction**: Application logs use `ExtractLog()`, proxy logs use `ExtractProxyLog()`
+3. **Separate Outputs**: Different output topics for different log types
+4. **Shared Error Handling**: Common error topic for both services
+
+## Configuration
+
+The service uses YAML configuration supporting both log types:
+
+```yaml
+kafka:
+  brokers: "localhost:9092"
+  
+  # Input topics
+  application_topic: "Raw.ApplicationLogs"
+  proxy_topic: "Raw.ProxyLogs"
+  
+  # Output topics  
+  output_topic: "Extracted.Application"
+  proxy_output_topic: "Extracted.Proxy"
+  
+  # Error topic (shared)
+  error_topic: "Extraction.Errors"
+  
+  # Consumer groups (separate)
+  consumer_group: "extraction-application"
+  proxy_consumer_group: "extraction-proxy"
+
+processing:
+  # Worker pool sizes
+  max_concurrency: 12          # Application log workers
+  proxy_max_concurrency: 12    # Proxy log workers
+  
+  enable_validation: true
+  skip_invalid_logs: false
+  log_parse_errors: false
+```
+
+## Log Types
+
+### Application Logs
+- **Source**: Raw.ApplicationLogs topic
+- **Format**: Standard application logs with nested `logs` substructure
+- **Output**: events.ApplicationLog
+- **Fields**: timestamp, level, logger, thread, message, exception info
+
+### Proxy Logs  
+- **Source**: Raw.ProxyLogs topic
+- **Format**: Apache access logs with proxy-specific fields
+- **Output**: events.ProxyLog
+- **Fields**: timestamp, method, path, status, response time, client IP, server name, user agent, cache status, pod name, pod IP
+
+## Usage
+
+### Running the Service
+
+```bash
+# Build both services
+make build
+
+# Run with configuration
+./bin/extraction configs/config.yaml
+
+# The service will start both:
+# - Application logs extraction service (12 workers)
+# - Proxy logs extraction service (12 workers)
+```
+
+### Docker Usage
+
+```bash
+# Build Docker image
+make docker-build
+
+# Run container
+docker run --rm -it \
+  -v $(PWD)/configs:/app/configs \
+  extraction-service configs/config.yaml
+```
+
+### Output Logs
+
+**Application Service:**
+```
+Starting application logs extraction service...
+Application extraction service started with 12 workers (buffer: 120), waiting for messages...
+Statistics: processed=1000, extracted=1000, validation_errors=0, extraction_errors=0 (worker 3)
+```
+
+**Proxy Service:**
+```
+Starting proxy logs extraction service...
+Proxy extraction service started with 12 workers (buffer: 120), waiting for messages...
+Proxy Statistics: processed=500, extracted=500, validation_errors=0, extraction_errors=0 (worker 7)
+```
+
+## Development
+
+### Testing
+
+```bash
+# Test all components
+make test
+
+# Test specific extractor
+go test ./internal/extractor -v
+
+# Test services
+go test ./internal/service -v
+```
+
+### Key Test Cases
+
+- `TestExtractor_ExtractProxyLog` - Verifies proxy log extraction
+- `TestExtractor_ApacheAccessLog` - Tests Apache access log format
+- Application log extraction (existing tests)
+
+## Performance
+
+- **Optimal Worker Count**: Match topic partition count (12 for both Raw.ApplicationLogs and Raw.ProxyLogs)
+- **Buffer Sizing**: `workers × 10` for smooth flow with backpressure
+- **Partitioning**: FNV32a hash algorithm ensures ordering preservation
+- **Memory Usage**: ~10MB base + ~1MB per worker pool
+- **Throughput**: ~10K-50K messages/second per service (depends on log complexity)
+
+## Monitoring
+
+Both services provide independent metrics:
+
+- `processedCount` - Total messages processed per service
+- `successCount` - Successfully extracted messages per service  
+- `validationErrors` - Validation failures per service
+- `extractionErrors` - Parse errors per service
+
+Statistics logged every 1000 messages with worker attribution.
 
 ## Project Structure
 
@@ -222,6 +403,34 @@ make deps
 }
 ```
 
+### Input: Raw Proxy Logs
+
+```json
+{
+  "@timestamp": "2025-06-15T18:14:04.948924Z",
+  "logs": {
+    "identdUsername": "-",
+    "localServerName": "localhost",
+    "remoteHost": "127.0.0.1",
+    "cache status": "-",
+    "remoteUser": "-",
+    "requestFirstLine": "GET /healthz HTTP/1.1",
+    "responseTime": "0",
+    "referer": "-",
+    "userAgent": "kube-probe/1.31",
+    "time": "[15/Jun/2025:18:14:04 +0000]",
+    "bytes": "-",
+    "status": "204"
+  },
+  "kubernetes": {
+    "pod_name": "apache2-igc-9db94ff4f-xzl59",
+    "pod_ip": "10.244.1.16",
+    "namespace_name": "default",
+    "container_name": "proxy"
+  }
+}
+```
+
 ### Output: Structured Application Log
 
 ```json
@@ -241,6 +450,27 @@ make deps
     "container": "app",
     "namespace": "default"
   }
+}
+```
+
+### Output: Structured Proxy Log
+
+```json
+{
+  "ts_ns": 1750016158506842000,
+  "method": "GET",
+  "path": "/healthz",
+  "status_code": 204,
+  "response_time_ms": 0,
+  "bytes_sent": 0,
+  "client_ip": "127.0.0.1",
+  "local_server_name": "localhost",
+  "remote_user": "-",
+  "referer": "-",
+  "user_agent": "kube-probe/1.31",
+  "cache_status": "-",
+  "pod_name": "apache2-igc-9db94ff4f-xzl59",
+  "pod_ip": "10.244.1.16"
 }
 ```
 

@@ -16,6 +16,9 @@ topics:
   Extracted.Application:
     partitions: 12
     cleanup.policy: delete
+  Extracted.Proxy:
+    partitions: 12
+    cleanup.policy: delete
   Extraction.Errors:
     partitions: 3
     cleanup.policy: delete

@@ -1,21 +1,24 @@
-# Application Logs Extraction Service Configuration
+# Application and Proxy Logs Extraction Service Configuration
 # This is an example configuration - update values for your environment
 
 kafka:
   # Kafka broker addresses
   brokers: "localhost:9092"
   
-  # Input topic containing raw application logs
-  input_topic: "Raw.ApplicationLogs"
+  # Input topics for raw logs
+  application_topic: "Raw.ApplicationLogs"
+  proxy_topic: "Raw.ProxyLogs"
   
-  # Output topic for extracted structured logs
+  # Output topics for extracted structured logs
   output_topic: "Extracted.Application"
+  proxy_output_topic: "Extracted.Proxy"
   
   # Error topic for extraction errors
   error_topic: "Extraction.Errors"
   
-  # Consumer group ID for this service
-  consumer_group: "extraction-service"
+  # Consumer group IDs for this service
+  consumer_group: "extraction-application"
+  proxy_consumer_group: "extraction-proxy"
   
   # Batch size for processing
   batch_size: 100
@@ -38,8 +41,11 @@ kafka:
     compression.type: "snappy"
 
 processing:
-  # Maximum number of concurrent processing goroutines
+  # Maximum number of concurrent processing goroutines for application logs
   max_concurrency: 12
+  
+  # Maximum number of concurrent processing goroutines for proxy logs  
+  proxy_max_concurrency: 12
   
   # Enable validation of extracted logs
   enable_validation: true

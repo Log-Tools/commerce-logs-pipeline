@@ -874,3 +874,288 @@ func TestExtractor_ApacheAccessLog(t *testing.T) {
 	err = extractor.ValidateExtractedLog(httpLog)
 	assert.NoError(t, err)
 }
+
+// Test proxy log extraction with ExtractProxyLog method
+func TestExtractor_ExtractProxyLog(t *testing.T) {
+	extractor := NewExtractor()
+
+	// Apache proxy log from the existing test case
+	rawLine := `{"@timestamp":"2025-06-15T18:14:04.948924Z","record_date":"20250615","_p":"F","log":"{\"localServerName\": \"localhost\", \"remoteHost\": \"127.0.0.1\", \"identdUsername\": \"-\", \"remoteUser\": \"-\", \"time\": \"[15/Jun/2025:18:14:04 +0000]\", \"responseTime\": \"0\", \"requestFirstLine\": \"GET /healthz HTTP/1.1\", \"status\": \"204\", \"bytes\": \"-\", \"referer\": \"-\", \"userAgent\": \"kube-probe/1.31\", \"cache status\": \"-\"}","stream":"stdout","time":"2025-06-15T18:14:04.948924301Z","logs":{"identdUsername":"-","localServerName":"localhost","remoteHost":"127.0.0.1","cache status":"-","remoteUser":"-","requestFirstLine":"GET /healthz HTTP/1.1","responseTime":"0","referer":"-","userAgent":"kube-probe/1.31","time":"[15/Jun/2025:18:14:04 +0000]","bytes":"-","status":"204"},"kubernetes":{"docker_id":"a8c06151bf6763f552a0ea2545ab7381d91e705eb2144be97b2b9e5f4de86b9e","pod_name":"apache2-igc-9db94ff4f-xzl59","pod_id":"7934cdee-429f-46a9-93fc-5ca7f4f8900f","host":"aks-guhn66afpt-25077532-vmss00001b","annotations":{"environment":"d1","data-ingest_dynatrace_com_injected":"true","oneagent_dynatrace_com_injected":"true","ae-version":"20250605-222342","dynakube_dynatrace_com_injected":"true","cni_projectcalico_org_podIPs":"10.244.1.16/32","cni_projectcalico_org_containerID":"74bac728fef3044daaf722ddb01dea23aad1774636580bd400ff40ba97699a70","cni_projectcalico_org_podIP":"10.244.1.16/32","fluentbit_io_parser":"mt-apache-ing"},"container_name":"proxy","labels":{"access-kibana":"","service":"loadbalancer","pod-template-hash":"9db94ff4f","scope":"public","tier":"frontend"},"container_hash":"modeltimagerepo.azurecr.io/cb/ingress-apache2@sha256:989d93fe498416915d7e80565f0ed33973c88e91238747fc0b64facb0501ced8","container_image":"modeltimagerepo.azurecr.io/cb/ingress-apache2:20250520-134500","pod_ip":"10.244.1.16","namespace_name":"default"}}`
+
+	source := events.LogSource{
+		Service:      "apache-proxy",
+		Environment:  "D1",
+		Subscription: "cp2",
+	}
+
+	result, err := extractor.ExtractProxyLog(rawLine, source)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+
+	// Should be extracted as ProxyLog
+	proxyLog, ok := result.(*events.ProxyLog)
+	require.True(t, ok, "Expected ProxyLog, got %T", result)
+
+	// Verify proxy-specific fields
+	assert.Equal(t, "GET", proxyLog.Method)
+	assert.Equal(t, "/healthz", proxyLog.Path)
+	assert.Equal(t, 204, proxyLog.StatusCode)
+	assert.Equal(t, "127.0.0.1", proxyLog.ClientIP)
+	assert.Equal(t, "localhost", proxyLog.LocalServerName)
+	assert.Equal(t, "-", proxyLog.RemoteUser)
+	assert.Equal(t, "-", proxyLog.Referer)
+	assert.Equal(t, "kube-probe/1.31", proxyLog.UserAgent)
+	assert.Equal(t, "-", proxyLog.CacheStatus)
+	assert.Equal(t, "apache2-igc-9db94ff4f-xzl59", proxyLog.PodName)
+	assert.Equal(t, "10.244.1.16", proxyLog.PodIP)
+	assert.Equal(t, int64(0), proxyLog.ResponseTimeMs)
+	assert.Equal(t, int64(0), proxyLog.BytesSent) // "-" bytes should become 0
+
+	// Verify timestamp is parsed correctly from root level
+	assert.Greater(t, proxyLog.TimestampNanos, int64(0))
+
+	// Should pass validation
+	err = extractor.ValidateExtractedLog(result)
+	assert.NoError(t, err)
+}
+
+// Test proxy log extraction with empty container log (should be skipped)
+func TestExtractor_ExtractProxyLog_EmptyContainerLog(t *testing.T) {
+	extractor := NewExtractor()
+
+	// Container log with empty message from proxy service (the exact error case)
+	rawLine := `{"@timestamp":"2025-06-12T14:55:43.277832Z","log":"","kubernetes":{"container_name":"proxy","docker_id":"2031a85753941e1bdd58e49f66724d11fa600f7dca4166a3d147bae32635b1d5","pod_ip":"10.244.5.22","host":"aks-guhn66afpt-25077532-vmss000018","namespace_name":"default","container_hash":"modeltimagerepo.azurecr.io/cb/ingress-apache2@sha256:989d93fe498416915d7e80565f0ed33973c88e91238747fc0b64facb0501ced8","pod_id":"5826df13-aeef-459c-b7bd-a7c366f1a333","labels":{"tier":"frontend","pod-template-hash":"9db94ff4f","scope":"public","access-kibana":"","service":"loadbalancer"},"annotations":{"cni_projectcalico_org_containerID":"0fdd66b4e0f3a0e847efead3874eaebe858f247b2a8788761209179483d80768","cni_projectcalico_org_podIP":"10.244.5.22/32","data-ingest_dynatrace_com_injected":"true","cni_projectcalico_org_podIPs":"10.244.5.22/32","environment":"d1","oneagent_dynatrace_com_injected":"true","ae-version":"20250605-222342","dynakube_dynatrace_com_injected":"true","fluentbit_io_parser":"mt-apache-ing"},"pod_name":"apache2-igc-9db94ff4f-2tjt8","container_image":"modeltimagerepo.azurecr.io/cb/ingress-apache2:20250520-134500"},"_p":"F","time":"2025-06-12T14:55:43.277832797Z","record_date":"20250612","stream":"stdout"}`
+
+	source := events.LogSource{
+		Service:      "apache-proxy",
+		Environment:  "D1",
+		Subscription: "cp2",
+	}
+
+	result, err := extractor.ExtractProxyLog(rawLine, source)
+
+	// Should return nil, nil (no error, no result) for empty log messages
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+
+	// This is the key test: result should be truly nil, not a wrapped nil pointer
+	if result != nil {
+		t.Errorf("Expected truly nil result for empty log message, but got: %v (type: %T)", result, result)
+	}
+}
+
+// Test proxy log extraction with mixed log types (Apache access + container logs)
+func TestExtractor_ExtractProxyLog_MixedLogTypes(t *testing.T) {
+	extractor := NewExtractor()
+	source := events.LogSource{Service: "apache-proxy", Environment: "D1", Subscription: "cp2"}
+
+	testCases := []struct {
+		name          string
+		rawLine       string
+		expectedType  string
+		expectSkipped bool
+	}{
+		{
+			name:         "Apache access log should return ProxyLog",
+			rawLine:      `{"@timestamp":"2025-06-15T18:14:04.948924Z","logs":{"identdUsername":"-","localServerName":"localhost","remoteHost":"127.0.0.1","cache status":"-","remoteUser":"-","requestFirstLine":"GET /healthz HTTP/1.1","responseTime":"0","referer":"-","userAgent":"kube-probe/1.31","time":"[15/Jun/2025:18:14:04 +0000]","bytes":"-","status":"204"},"kubernetes":{"pod_name":"apache2-igc-9db94ff4f-xzl59"}}`,
+			expectedType: "*events.ProxyLog",
+		},
+		{
+			name:         "Container log with content should return ApplicationLog",
+			rawLine:      `{"@timestamp":"2025-06-12T14:55:43.277832Z","log":"INFO: Starting Apache server","kubernetes":{"container_name":"proxy","pod_name":"apache2-igc-9db94ff4f-2tjt8"},"time":"2025-06-12T14:55:43.277832797Z"}`,
+			expectedType: "*events.ApplicationLog",
+		},
+		{
+			name:          "Empty container log should be skipped",
+			rawLine:       `{"@timestamp":"2025-06-12T14:55:43.277832Z","log":"","kubernetes":{"container_name":"proxy","pod_name":"apache2-igc-9db94ff4f-2tjt8"},"time":"2025-06-12T14:55:43.277832797Z"}`,
+			expectSkipped: true,
+		},
+		{
+			name:          "Whitespace-only container log should be skipped",
+			rawLine:       `{"@timestamp":"2025-06-12T14:55:43.277832Z","log":"   \n  \t  ","kubernetes":{"container_name":"proxy","pod_name":"apache2-igc-9db94ff4f-2tjt8"},"time":"2025-06-12T14:55:43.277832797Z"}`,
+			expectSkipped: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := extractor.ExtractProxyLog(tc.rawLine, source)
+
+			if tc.expectSkipped {
+				assert.NoError(t, err)
+				assert.Nil(t, result)
+				// Ensure it's truly nil, not a wrapped nil pointer
+				if result != nil {
+					t.Errorf("Expected truly nil result for skipped message, but got: %v (type: %T)", result, result)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, result)
+
+				// Check the expected type
+				resultType := fmt.Sprintf("%T", result)
+				assert.Equal(t, tc.expectedType, resultType)
+
+				// Should pass validation
+				err = extractor.ValidateExtractedLog(result)
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// Test proxy log extraction with malformed request line (requestFirstLine = "-")
+func TestExtractor_ExtractProxyLog_MalformedRequestLine(t *testing.T) {
+	extractor := NewExtractor()
+
+	// Apache access log with malformed request line (the exact error case) - with logs structure
+	rawLine := `{"@timestamp":"2025-06-12T14:56:40.217676Z","logs":{"localServerName":"_","remoteHost":"179.29.33.176","identdUsername":"-","remoteUser":"-","time":"[12/Jun/2025:14:56:40 +0000]","responseTime":"0","requestFirstLine":"-","status":"408","bytes":"-","referer":"-","userAgent":"-","cache status":"-"},"kubernetes":{"host":"aks-guhn66afpt-25077532-vmss000018","container_hash":"modeltimagerepo.azurecr.io/cb/ingress-apache2@sha256:989d93fe498416915d7e80565f0ed33973c88e91238747fc0b64facb0501ced8","pod_id":"5826df13-aeef-459c-b7bd-a7c366f1a333","namespace_name":"default","container_image":"modeltimagerepo.azurecr.io/cb/ingress-apache2:20250520-134500","pod_name":"apache2-igc-9db94ff4f-2tjt8","labels":{"scope":"public","service":"loadbalancer","tier":"frontend","access-kibana":"","pod-template-hash":"9db94ff4f"},"container_name":"proxy","docker_id":"2031a85753941e1bdd58e49f66724d11fa600f7dca4166a3d147bae32635b1d5","annotations":{"cni_projectcalico_org_podIPs":"10.244.5.22/32","data-ingest_dynatrace_com_injected":"true","cni_projectcalico_org_containerID":"74bac728fef3044daaf722ddb01dea23aad1774636580bd400ff40ba97699a70","fluentbit_io_parser":"mt-apache-ing","environment":"d1","oneagent_dynatrace_com_injected":"true","dynakube_dynatrace_com_injected":"true"}}}`
+
+	source := events.LogSource{
+		Service:      "apache-proxy",
+		Environment:  "D1",
+		Subscription: "cp2",
+	}
+
+	result, err := extractor.ExtractProxyLog(rawLine, source)
+
+	// Should return nil, nil (no error, no result) for malformed requests
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+
+	// This is the key test: result should be truly nil, not a wrapped nil pointer
+	if result != nil {
+		t.Errorf("Expected truly nil result for malformed request line, but got: %v (type: %T)", result, result)
+	}
+}
+
+// Test proxy log extraction with non-standard HTTP method (SSTP_DUPLEX_POST)
+func TestExtractor_ExtractProxyLog_NonStandardMethod(t *testing.T) {
+	extractor := NewExtractor()
+
+	// Apache access log with non-standard HTTP method (the exact error case from user)
+	rawLine := `{"@timestamp":"2025-06-15T02:33:13.242754Z","_p":"F","record_date":"20250615","stream":"stdout","log":"{\"localServerName\": \"_\", \"remoteHost\": \"143.198.75.35\", \"identdUsername\": \"-\", \"remoteUser\": \"-\", \"time\": \"[15/Jun/2025:02:33:13 +0000]\", \"responseTime\": \"0\", \"requestFirstLine\": \"SSTP_DUPLEX_POST /sra_{BA195980-CD49-458b-9E23-C84EE0ADCD75}/ HTTP/1.1\", \"status\": \"400\", \"bytes\": \"226\", \"referer\": \"-\", \"userAgent\": \"-\", \"cache status\": \"-\"}","time":"2025-06-15T02:33:13.242754189Z","logs":{"requestFirstLine":"SSTP_DUPLEX_POST /sra_{BA195980-CD49-458b-9E23-C84EE0ADCD75}/ HTTP/1.1","bytes":"226","referer":"-","userAgent":"-","localServerName":"_","remoteHost":"143.198.75.35","cache status":"-","time":"[15/Jun/2025:02:33:13 +0000]","remoteUser":"-","identdUsername":"-","responseTime":"0","status":"400"},"kubernetes":{"container_name":"proxy","namespace_name":"default","pod_id":"7934cdee-429f-46a9-93fc-5ca7f4f8900f","pod_ip":"10.244.1.16","container_image":"modeltimagerepo.azurecr.io/cb/ingress-apache2:20250520-134500","pod_name":"apache2-igc-9db94ff4f-xzl59","container_hash":"modeltimagerepo.azurecr.io/cb/ingress-apache2@sha256:989d93fe498416915d7e80565f0ed33973c88e91238747fc0b64facb0501ced8","docker_id":"a8c06151bf6763f552a0ea2545ab7381d91e705eb2144be97b2b9e5f4de86b9e","host":"aks-guhn66afpt-25077532-vmss00001b","labels":{"scope":"public","tier":"frontend","pod-template-hash":"9db94ff4f","service":"loadbalancer","access-kibana":""},"annotations":{"cni_projectcalico_org_podIPs":"10.244.1.16/32","data-ingest_dynatrace_com_injected":"true","cni_projectcalico_org_containerID":"74bac728fef3044daaf722ddb01dea23aad1774636580bd400ff40ba97699a70","fluentbit_io_parser":"mt-apache-ing","environment":"d1","cni_projectcalico_org_podIP":"10.244.1.16/32","oneagent_dynatrace_com_injected":"true","ae-version":"20250605-222342","dynakube_dynatrace_com_injected":"true"}}}`
+
+	source := events.LogSource{
+		Service:      "apache-proxy",
+		Environment:  "D1",
+		Subscription: "cp2",
+	}
+
+	result, err := extractor.ExtractProxyLog(rawLine, source)
+
+	// Should return nil, nil (no error, no result) for non-standard HTTP methods
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+
+	// This is the key test: result should be truly nil, not a wrapped nil pointer
+	if result != nil {
+		t.Errorf("Expected truly nil result for non-standard HTTP method, but got: %v (type: %T)", result, result)
+	}
+}
+
+// Test HTTP request log extraction with non-standard HTTP method (should also be skipped)
+func TestExtractor_ExtractLog_NonStandardMethod(t *testing.T) {
+	extractor := NewExtractor()
+
+	// Apache access log with non-standard HTTP method using ExtractLog method
+	rawLine := `{"@timestamp":"2025-06-15T02:33:13.242754Z","logs":{"requestFirstLine":"SSTP_DUPLEX_POST /sra_{BA195980-CD49-458b-9E23-C84EE0ADCD75}/ HTTP/1.1","bytes":"226","referer":"-","userAgent":"-","localServerName":"_","remoteHost":"143.198.75.35","cache status":"-","time":"[15/Jun/2025:02:33:13 +0000]","remoteUser":"-","identdUsername":"-","responseTime":"0","status":"400"},"kubernetes":{"pod_name":"apache2-igc-9db94ff4f-xzl59"}}`
+
+	source := events.LogSource{
+		Service:      "apache-proxy",
+		Environment:  "D1",
+		Subscription: "cp2",
+	}
+
+	result, err := extractor.ExtractLog(rawLine, source)
+
+	// Should return nil, nil (no error, no result) for non-standard HTTP methods
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+
+	// This is the key test: result should be truly nil, not a wrapped nil pointer
+	if result != nil {
+		t.Errorf("Expected truly nil result for non-standard HTTP method, but got: %v (type: %T)", result, result)
+	}
+}
+
+// Test proxy log extraction with RTSP protocol (non-HTTP protocol)
+func TestExtractor_ExtractProxyLog_RTSPProtocol(t *testing.T) {
+	extractor := NewExtractor()
+
+	// Apache access log with RTSP protocol (the exact error case from user)
+	rawLine := `{"@timestamp":"2025-06-12T18:48:45.398543Z","time":"2025-06-12T18:48:45.398543062Z","logs":{"remoteHost":"172.235.173.150","identdUsername":"-","remoteUser":"-","responseTime":"0","requestFirstLine":"OPTIONS / RTSP/1.0","time":"[12/Jun/2025:18:48:45 +0000]","cache status":"-","bytes":"226","status":"400","referer":"-","userAgent":"-","localServerName":"_"},"record_date":"20250612","log":"{\"localServerName\": \"_\", \"remoteHost\": \"172.235.173.150\", \"identdUsername\": \"-\", \"remoteUser\": \"-\", \"time\": \"[12/Jun/2025:18:48:45 +0000]\", \"responseTime\": \"0\", \"requestFirstLine\": \"OPTIONS / RTSP/1.0\", \"status\": \"400\", \"bytes\": \"226\", \"referer\": \"-\", \"userAgent\": \"-\", \"cache status\": \"-\"}","stream":"stdout","_p":"F","kubernetes":{"pod_name":"apache2-igc-9db94ff4f-2tjt8","namespace_name":"default","host":"aks-guhn66afpt-25077532-vmss000018","annotations":{"cni_projectcalico_org_podIPs":"10.244.5.22/32","oneagent_dynatrace_com_injected":"true","data-ingest_dynatrace_com_injected":"true","dynakube_dynatrace_com_injected":"true","cni_projectcalico_org_containerID":"0fdd66b4e0f3a0e847efead3874eaebe858f247b2a8788761209179483d80768","environment":"d1","fluentbit_io_parser":"mt-apache-ing","cni_projectcalico_org_podIP":"10.244.5.22/32","ae-version":"20250605-222342"},"docker_id":"2031a85753941e1bdd58e49f66724d11fa600f7dca4166a3d147bae32635b1d5","pod_ip":"10.244.5.22","pod_id":"5826df13-aeef-459c-b7bd-a7c366f1a333","labels":{"tier":"frontend","pod-template-hash":"9db94ff4f","access-kibana":"","scope":"public","service":"loadbalancer"},"container_name":"proxy","container_image":"modeltimagerepo.azurecr.io/cb/ingress-apache2:20250520-134500","container_hash":"modeltimagerepo.azurecr.io/cb/ingress-apache2@sha256:989d93fe498416915d7e80565f0ed33973c88e91238747fc0b64facb0501ced8"}}`
+
+	source := events.LogSource{
+		Service:      "apache-proxy",
+		Environment:  "D1",
+		Subscription: "cp2",
+	}
+
+	result, err := extractor.ExtractProxyLog(rawLine, source)
+
+	// Should return nil, nil (no error, no result) for non-HTTP protocols
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+
+	// This is the key test: result should be truly nil, not a wrapped nil pointer
+	if result != nil {
+		t.Errorf("Expected truly nil result for non-HTTP protocol, but got: %v (type: %T)", result, result)
+	}
+}
+
+// Test HTTP request log extraction with RTSP protocol (should also be skipped)
+func TestExtractor_ExtractLog_RTSPProtocol(t *testing.T) {
+	extractor := NewExtractor()
+
+	// Apache access log with RTSP protocol using ExtractLog method
+	rawLine := `{"@timestamp":"2025-06-12T18:48:45.398543Z","logs":{"remoteHost":"172.235.173.150","identdUsername":"-","remoteUser":"-","responseTime":"0","requestFirstLine":"OPTIONS / RTSP/1.0","time":"[12/Jun/2025:18:48:45 +0000]","cache status":"-","bytes":"226"},"kubernetes":{"pod_name":"apache2-igc-9db94ff4f-2tjt8"}}`
+
+	source := events.LogSource{
+		Service:      "apache-proxy",
+		Environment:  "D1",
+		Subscription: "cp2",
+	}
+
+	result, err := extractor.ExtractLog(rawLine, source)
+
+	// Should return nil, nil (no error, no result) for non-HTTP protocols
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+
+	// This is the key test: result should be truly nil, not a wrapped nil pointer
+	if result != nil {
+		t.Errorf("Expected truly nil result for non-HTTP protocol, but got: %v (type: %T)", result, result)
+	}
+}
+
+// Test isStandardHTTPMethod function
+func TestExtractor_IsStandardHTTPMethod(t *testing.T) {
+	extractor := NewExtractor()
+
+	testCases := []struct {
+		method   string
+		expected bool
+	}{
+		{"GET", true},
+		{"POST", true},
+		{"PUT", true},
+		{"DELETE", true},
+		{"HEAD", true},
+		{"OPTIONS", true},
+		{"PATCH", true},
+		{"TRACE", true},
+		{"CONNECT", true},
+		{"SSTP_DUPLEX_POST", false},
+		{"INVALID_METHOD", false},
+		{"get", false}, // case sensitive
+		{"", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.method, func(t *testing.T) {
+			result := extractor.isStandardHTTPMethod(tc.method)
+			assert.Equal(t, tc.expected, result, "Method: %s", tc.method)
+		})
+	}
+}

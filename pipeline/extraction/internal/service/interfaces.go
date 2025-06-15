@@ -26,6 +26,7 @@ type Producer interface {
 // Extractor defines the interface for log extraction operations
 type Extractor interface {
 	ExtractLog(rawLine string, source events.LogSource) (interface{}, error)
+	ExtractProxyLog(rawLine string, source events.LogSource) (interface{}, error)
 	ValidateExtractedLog(log interface{}) error
 }
 
