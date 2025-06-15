@@ -109,8 +109,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 				parsed := ParseKubernetesBlobName(blobName)
 				return parsed.Valid &&
 					strings.HasPrefix(parsed.PodName, "api-") &&
-					parsed.Container != "cache-cleaner" &&
-					parsed.Container != "log-forwarder"
+					parsed.Container == "platform"
 			},
 		},
 
@@ -124,7 +123,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 				parsed := ParseKubernetesBlobName(blobName)
 				return parsed.Valid &&
 					strings.HasPrefix(parsed.PodName, "backoffice") &&
-					parsed.Container != "cache-cleaner"
+					parsed.Container == "platform"
 			},
 		},
 
@@ -138,8 +137,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 				parsed := ParseKubernetesBlobName(blobName)
 				return parsed.Valid &&
 					strings.HasPrefix(parsed.PodName, "backgroundprocessing") &&
-					parsed.Container != "cache-cleaner" &&
-					parsed.Container != "log-forwarder"
+					parsed.Container == "platform"
 			},
 		},
 
@@ -153,7 +151,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 				parsed := ParseKubernetesBlobName(blobName)
 				return parsed.Valid &&
 					strings.HasPrefix(parsed.PodName, "jsapps") &&
-					parsed.Container != "cache-cleaner"
+					parsed.Container == "jsapps"
 			},
 		},
 
@@ -167,7 +165,7 @@ func GetBlobSelectors() map[string]*BlobSelector {
 				parsed := ParseKubernetesBlobName(blobName)
 				return parsed.Valid &&
 					strings.HasPrefix(parsed.PodName, "imageprocessing") &&
-					parsed.Container != "cache-cleaner"
+					parsed.Container == "imageprocessing"
 			},
 		},
 
@@ -180,7 +178,8 @@ func GetBlobSelectors() map[string]*BlobSelector {
 			Predicate: func(blobName string) bool {
 				parsed := ParseKubernetesBlobName(blobName)
 				return parsed.Valid &&
-					strings.HasPrefix(parsed.PodName, "zookeeper")
+					strings.HasPrefix(parsed.PodName, "zookeeper") &&
+					parsed.Container == "zookeeper"
 			},
 		},
 	}

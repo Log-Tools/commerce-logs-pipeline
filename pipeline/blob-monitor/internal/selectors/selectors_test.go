@@ -286,6 +286,12 @@ func TestAPISelector(t *testing.T) {
 			reason:   "Log forwarder is infrastructure, not business logic",
 		},
 		{
+			name:     "install-oneagent should be excluded",
+			blobName: "20250613.api-d64987b96-ctnd7_default_install-oneagent-414f37aa2bb131c34f3efc074f1549fb5283d831882676ff2ed95a197b015223.gz",
+			expected: false,
+			reason:   "Install-oneagent is a sidecar container, not the main API service",
+		},
+		{
 			name:     "different service should be excluded",
 			blobName: "20250613.apache2-igc-9db94ff4f-b6w9z_default_proxy-54353eeb68e263ecb7adf59a989cd5eb7f3ba0545d8c63ad2c5a5eb7ff6f106b.gz",
 			expected: false,
