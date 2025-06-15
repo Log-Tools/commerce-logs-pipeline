@@ -42,7 +42,7 @@ func (e *Extractor) ExtractLog(rawLine string, source events.LogSource) (interfa
 	var appLog events.RawApplicationLogLine
 	if err := json.Unmarshal([]byte(rawLine), &appLog); err == nil && appLog.Logs != nil {
 		// Format 1: Structured logs with Logs substructure
-		return e.extractFromStructuredLog(&appLog, source)
+		return e.extractFromStructuredLog(&appLog, source, rawLine)
 	}
 
 	// If that fails or no Logs field, try container log format (Format 2)
@@ -64,7 +64,7 @@ func (e *Extractor) ExtractLog(rawLine string, source events.LogSource) (interfa
 }
 
 // extractFromStructuredLog extracts from Format 1 (with Logs substructure)
-func (e *Extractor) extractFromStructuredLog(rawLog *events.RawApplicationLogLine, source events.LogSource) (interface{}, error) {
+func (e *Extractor) extractFromStructuredLog(rawLog *events.RawApplicationLogLine, source events.LogSource, rawLine string) (interface{}, error) {
 	if rawLog.Logs == nil {
 		return nil, fmt.Errorf("missing logs substructure")
 	}
@@ -75,7 +75,7 @@ func (e *Extractor) extractFromStructuredLog(rawLog *events.RawApplicationLogLin
 	isAccessLog := e.isHTTPRequestLog(rawLog.Logs)
 
 	if isAccessLog {
-		return e.extractHTTPRequestLog(rawLog, source)
+		return e.extractHTTPRequestLog(rawLog, source, rawLine)
 	} else {
 		result, err := e.extractApplicationLog(rawLog, source)
 		if err != nil {
@@ -89,9 +89,14 @@ func (e *Extractor) extractFromStructuredLog(rawLog *events.RawApplicationLogLin
 	}
 }
 
-// isHTTPRequestLog determines if a log is an HTTP request log by checking contextMap contents
+// isHTTPRequestLog determines if a log is an HTTP request log by checking contextMap contents or Apache fields
 func (e *Extractor) isHTTPRequestLog(logs *events.RawLogs) bool {
-	// Must have timeMillis and contextMap
+	// Check for Apache access log format first (has requestFirstLine or status fields)
+	if logs.RequestFirstLine != "" || logs.Status != "" {
+		return true
+	}
+
+	// Check for traditional format with timeMillis and contextMap
 	if logs.TimeMillis == nil || logs.ContextMap == nil {
 		return false
 	}
@@ -212,12 +217,24 @@ func (e *Extractor) extractLogLevel(message string) string {
 }
 
 // extractHTTPRequestLog extracts structured HTTP request data
-func (e *Extractor) extractHTTPRequestLog(rawLog *events.RawApplicationLogLine, source events.LogSource) (*events.HTTPRequestLog, error) {
-	// Extract timestamp from timeMillis
-	if rawLog.Logs.TimeMillis == nil {
-		return nil, fmt.Errorf("missing timeMillis for HTTP request log")
+func (e *Extractor) extractHTTPRequestLog(rawLog *events.RawApplicationLogLine, source events.LogSource, rawLine string) (*events.HTTPRequestLog, error) {
+	// Extract timestamp - try timeMillis first, then extract from root level for Apache logs
+	var timestampNanos int64
+	if rawLog.Logs.TimeMillis != nil {
+		timestampNanos = *rawLog.Logs.TimeMillis * 1e6
+	} else {
+		// Apache access logs don't have timeMillis, extract from root level timestamp
+		var containerLog events.RawContainerLogLine
+		if err := json.Unmarshal([]byte(rawLine), &containerLog); err == nil {
+			// Parse timestamp from root level @timestamp or time field
+			timestampNanos, err = e.parseContainerLogTimestamp(&containerLog)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse Apache access log timestamp: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to parse Apache access log for timestamp: %w", err)
+		}
 	}
-	timestampNanos := *rawLog.Logs.TimeMillis * 1e6
 
 	// Extract pod name
 	podName := ""
@@ -225,79 +242,118 @@ func (e *Extractor) extractHTTPRequestLog(rawLog *events.RawApplicationLogLine, 
 		podName = rawLog.Kubernetes.PodName
 	}
 
-	// Parse contextMap for HTTP fields
-	ctx := rawLog.Logs.ContextMap
-	if ctx == nil {
-		return nil, fmt.Errorf("missing contextMap for HTTP request log")
-	}
+	// Extract HTTP request data - handle both contextMap format and Apache format
+	var method, path, clientIP string
+	var statusCode int
+	var bytesSent, responseTimeMs int64
 
-	// Extract request line (METHOD /path HTTP/1.1)
-	requestLine, ok := ctx["requestLine"].(string)
-	if !ok {
-		return nil, fmt.Errorf("missing or invalid requestLine in contextMap")
-	}
+	if rawLog.Logs.ContextMap != nil {
+		// Traditional format with contextMap
+		ctx := rawLog.Logs.ContextMap
 
-	// Parse method and path from request line
-	matches := e.requestLineRegex.FindStringSubmatch(requestLine)
-	if len(matches) < 3 {
-		return nil, fmt.Errorf("failed to parse request line: %s", requestLine)
-	}
-	method := matches[1]
-	path := matches[2]
+		// Extract request line (METHOD /path HTTP/1.1)
+		requestLine, ok := ctx["requestLine"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid requestLine in contextMap")
+		}
 
-	// Extract status code
-	statusCode := 0
-	if sc, ok := ctx["statusCode"]; ok {
-		switch v := sc.(type) {
-		case float64:
-			statusCode = int(v)
-		case int:
-			statusCode = v
-		case string:
-			if parsed, err := strconv.Atoi(v); err == nil {
+		// Parse method and path from request line
+		matches := e.requestLineRegex.FindStringSubmatch(requestLine)
+		if len(matches) < 3 {
+			return nil, fmt.Errorf("failed to parse request line: %s", requestLine)
+		}
+		method = matches[1]
+		path = matches[2]
+
+		// Extract status code
+		if sc, ok := ctx["statusCode"]; ok {
+			switch v := sc.(type) {
+			case float64:
+				statusCode = int(v)
+			case int:
+				statusCode = v
+			case string:
+				if parsed, err := strconv.Atoi(v); err == nil {
+					statusCode = parsed
+				}
+			}
+		}
+
+		// Extract bytes sent
+		if bs, ok := ctx["bytesSent"]; ok {
+			switch v := bs.(type) {
+			case float64:
+				bytesSent = int64(v)
+			case int:
+				bytesSent = int64(v)
+			case int64:
+				bytesSent = v
+			case string:
+				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+					bytesSent = parsed
+				}
+			}
+		}
+
+		// Extract response time (processMillis)
+		if rt, ok := ctx["processMillis"]; ok {
+			switch v := rt.(type) {
+			case float64:
+				responseTimeMs = int64(v)
+			case int:
+				responseTimeMs = int64(v)
+			case int64:
+				responseTimeMs = v
+			case string:
+				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+					responseTimeMs = parsed
+				}
+			}
+		}
+
+		// Extract client IP (remoteHost)
+		if rh, ok := ctx["remoteHost"].(string); ok {
+			clientIP = rh
+		}
+	} else {
+		// Apache access log format - fields are directly in logs object
+		// Extract request line from requestFirstLine field
+		requestLine := rawLog.Logs.RequestFirstLine
+		if requestLine == "" {
+			return nil, fmt.Errorf("missing requestFirstLine in Apache access log")
+		}
+
+		// Parse method and path from request line
+		matches := e.requestLineRegex.FindStringSubmatch(requestLine)
+		if len(matches) < 3 {
+			return nil, fmt.Errorf("failed to parse Apache request line: %s", requestLine)
+		}
+		method = matches[1]
+		path = matches[2]
+
+		// Extract status code
+		if rawLog.Logs.Status != "" {
+			if parsed, err := strconv.Atoi(rawLog.Logs.Status); err == nil {
 				statusCode = parsed
 			}
 		}
-	}
 
-	// Extract bytes sent
-	bytesSent := int64(0)
-	if bs, ok := ctx["bytesSent"]; ok {
-		switch v := bs.(type) {
-		case float64:
-			bytesSent = int64(v)
-		case int:
-			bytesSent = int64(v)
-		case int64:
-			bytesSent = v
-		case string:
-			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+		// Extract bytes sent
+		if rawLog.Logs.Bytes != "" && rawLog.Logs.Bytes != "-" {
+			if parsed, err := strconv.ParseInt(rawLog.Logs.Bytes, 10, 64); err == nil {
 				bytesSent = parsed
 			}
 		}
-	}
 
-	// Extract response time (processMillis)
-	responseTimeMs := int64(0)
-	if rt, ok := ctx["processMillis"]; ok {
-		switch v := rt.(type) {
-		case float64:
-			responseTimeMs = int64(v)
-		case int:
-			responseTimeMs = int64(v)
-		case int64:
-			responseTimeMs = v
-		case string:
-			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+		// Extract response time
+		if rawLog.Logs.ResponseTime != "" {
+			if parsed, err := strconv.ParseInt(rawLog.Logs.ResponseTime, 10, 64); err == nil {
 				responseTimeMs = parsed
 			}
 		}
-	}
 
-	// Extract client IP (remoteHost)
-	clientIP := ""
-	if rh, ok := ctx["remoteHost"].(string); ok {
-		clientIP = rh
+		// Extract client IP
+		clientIP = rawLog.Logs.RemoteHost
 	}
 
 	return &events.HTTPRequestLog{

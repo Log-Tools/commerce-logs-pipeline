@@ -28,6 +28,20 @@ type RawLogs struct {
 	TimeMillis *int64                 `json:"timeMillis,omitempty"`
 	ContextMap map[string]interface{} `json:"contextMap,omitempty"`
 
+	// For Apache access logs (different format)
+	RequestFirstLine string `json:"requestFirstLine,omitempty"`
+	Status           string `json:"status,omitempty"`
+	RemoteHost       string `json:"remoteHost,omitempty"`
+	ResponseTime     string `json:"responseTime,omitempty"`
+	Bytes            string `json:"bytes,omitempty"`
+	LocalServerName  string `json:"localServerName,omitempty"`
+	IdentdUsername   string `json:"identdUsername,omitempty"`
+	RemoteUser       string `json:"remoteUser,omitempty"`
+	Time             string `json:"time,omitempty"` // Apache time format like "[15/Jun/2025:18:14:04 +0000]"
+	Referer          string `json:"referer,omitempty"`
+	UserAgent        string `json:"userAgent,omitempty"`
+	CacheStatus      string `json:"cache status,omitempty"`
+
 	// For application logs
 	Instant    *RawInstant      `json:"instant,omitempty"`
 	Level      string           `json:"level,omitempty"`

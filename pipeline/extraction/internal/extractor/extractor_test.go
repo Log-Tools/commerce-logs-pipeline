@@ -835,3 +835,42 @@ func TestExtractor_NilPointerInterfaceFix(t *testing.T) {
 		})
 	}
 }
+
+// Test Apache access log format from the error case
+func TestExtractor_ApacheAccessLog(t *testing.T) {
+	extractor := NewExtractor()
+
+	// Apache access log from the error case
+	rawLine := `{"@timestamp":"2025-06-15T18:14:04.948924Z","record_date":"20250615","_p":"F","log":"{\"localServerName\": \"localhost\", \"remoteHost\": \"127.0.0.1\", \"identdUsername\": \"-\", \"remoteUser\": \"-\", \"time\": \"[15/Jun/2025:18:14:04 +0000]\", \"responseTime\": \"0\", \"requestFirstLine\": \"GET /healthz HTTP/1.1\", \"status\": \"204\", \"bytes\": \"-\", \"referer\": \"-\", \"userAgent\": \"kube-probe/1.31\", \"cache status\": \"-\"}","stream":"stdout","time":"2025-06-15T18:14:04.948924301Z","logs":{"identdUsername":"-","localServerName":"localhost","remoteHost":"127.0.0.1","cache status":"-","remoteUser":"-","requestFirstLine":"GET /healthz HTTP/1.1","responseTime":"0","referer":"-","userAgent":"kube-probe/1.31","time":"[15/Jun/2025:18:14:04 +0000]","bytes":"-","status":"204"},"kubernetes":{"docker_id":"a8c06151bf6763f552a0ea2545ab7381d91e705eb2144be97b2b9e5f4de86b9e","pod_name":"apache2-igc-9db94ff4f-xzl59","pod_id":"7934cdee-429f-46a9-93fc-5ca7f4f8900f","host":"aks-guhn66afpt-25077532-vmss00001b","annotations":{"environment":"d1","data-ingest_dynatrace_com_injected":"true","oneagent_dynatrace_com_injected":"true","ae-version":"20250605-222342","dynakube_dynatrace_com_injected":"true","cni_projectcalico_org_podIPs":"10.244.1.16/32","cni_projectcalico_org_containerID":"74bac728fef3044daaf722ddb01dea23aad1774636580bd400ff40ba97699a70","cni_projectcalico_org_podIP":"10.244.1.16/32","fluentbit_io_parser":"mt-apache-ing"},"container_name":"proxy","labels":{"access-kibana":"","service":"loadbalancer","pod-template-hash":"9db94ff4f","scope":"public","tier":"frontend"},"container_hash":"modeltimagerepo.azurecr.io/cb/ingress-apache2@sha256:989d93fe498416915d7e80565f0ed33973c88e91238747fc0b64facb0501ced8","container_image":"modeltimagerepo.azurecr.io/cb/ingress-apache2:20250520-134500","pod_ip":"10.244.1.16","namespace_name":"default"}}`
+
+	source := events.LogSource{
+		Service:      "",
+		Environment:  "D1",
+		Subscription: "cp2",
+	}
+
+	result, err := extractor.ExtractLog(rawLine, source)
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+
+	// Should be extracted as HTTP request log
+	httpLog, ok := result.(*events.HTTPRequestLog)
+	assert.True(t, ok, "Should extract as HTTPRequestLog")
+	assert.NotNil(t, httpLog)
+
+	// Verify basic fields
+	assert.Equal(t, "GET", httpLog.Method)
+	assert.Equal(t, "/healthz", httpLog.Path)
+	assert.Equal(t, 204, httpLog.StatusCode)
+	assert.Equal(t, "127.0.0.1", httpLog.ClientIP)
+	assert.Equal(t, "apache2-igc-9db94ff4f-xzl59", httpLog.PodName)
+	assert.Equal(t, int64(0), httpLog.ResponseTimeMs)
+	assert.Equal(t, int64(0), httpLog.BytesSent) // "-" bytes should become 0
+
+	// Verify timestamp is parsed correctly from root level
+	assert.Greater(t, httpLog.TimestampNanos, int64(0))
+
+	// Should pass validation
+	err = extractor.ValidateExtractedLog(httpLog)
+	assert.NoError(t, err)
+}
