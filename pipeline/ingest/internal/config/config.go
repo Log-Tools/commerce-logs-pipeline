@@ -391,7 +391,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Kafka.Consumer.AutoOffsetReset = "earliest"
 	}
 	if cfg.Worker.BlobStateTopic == "" {
-		cfg.Worker.BlobStateTopic = "BlobStates"
+		cfg.Worker.BlobStateTopic = "Ingestion.BlobState"
 	}
 	if cfg.Worker.ConsumerGroup == "" {
 		cfg.Worker.ConsumerGroup = "ingestion-worker"
