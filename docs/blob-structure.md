@@ -65,4 +65,4 @@ The `service-name` component is used functionally for blob filtering:
 - **Container Reference**: The blob names reference Kubernetes containers (Docker containers running in pods) but the blob storage structure itself is purely Azure Blob Storage organization
 - **No Direct Relationship**: Blob storage hierarchy has no direct relationship to Docker container hierarchies
 - **Compressed Format**: All log files are compressed as gzip (`.gz`) files
-- **Daily Organization**: Blobs are organized by date for efficient temporal filtering 
+- **Daily Organization**: Blobs are organized by date for efficient temporal filtering
