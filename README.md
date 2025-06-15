@@ -284,7 +284,7 @@ cd pipeline/blob-monitor
 go run cmd/blob-monitor/main.go configs/config.yaml
 
 # Run with custom configuration
-go run cmd/blob-monitor/main.go configs/config.yaml
+go run cmd/blob-monitor/main.go /path/to/your-config.yaml
 ```
 
 ### Configuration Example
