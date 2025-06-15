@@ -194,6 +194,11 @@ func (p *blobProcessor) processDownloadedContent(ctx context.Context, body io.Re
 			TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: partition},
 			Key:            []byte(kafkaKey),
 			Value:          []byte(line),
+			Headers: []kafka.Header{
+				{Key: "service", Value: []byte(blobInfo.ServiceSelector)},
+				{Key: "environment", Value: []byte(blobInfo.Environment)},
+				{Key: "subscription", Value: []byte(blobInfo.Subscription)},
+			},
 		}
 
 		// Use nil delivery channel to avoid channel management issues

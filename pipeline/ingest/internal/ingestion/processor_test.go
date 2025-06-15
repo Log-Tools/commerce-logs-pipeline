@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -530,4 +531,168 @@ func TestBlobProcessor_ProcessBlob(t *testing.T) {
 		assert.Equal(t, 1000, cfg.Kafka.Producer.FlushTimeoutMs)
 		assert.Equal(t, 1024, cfg.Worker.ProcessingConfig.LineBufferSize)
 	})
+}
+
+func TestBlobProcessor_TopicForSelector(t *testing.T) {
+	cfg := &config.Config{
+		Kafka: config.KafkaConfig{
+			ProxyTopic:       "Raw.ProxyLogs",
+			ApplicationTopic: "Raw.ApplicationLogs",
+		},
+	}
+
+	processor := &blobProcessor{
+		config: cfg,
+	}
+
+	tests := []struct {
+		name            string
+		serviceSelector string
+		expectedTopic   string
+	}{
+		{
+			name:            "apache-proxy routes to proxy topic",
+			serviceSelector: "apache-proxy",
+			expectedTopic:   "Raw.ProxyLogs",
+		},
+		{
+			name:            "api routes to application topic",
+			serviceSelector: "api",
+			expectedTopic:   "Raw.ApplicationLogs",
+		},
+		{
+			name:            "backoffice routes to application topic",
+			serviceSelector: "backoffice",
+			expectedTopic:   "Raw.ApplicationLogs",
+		},
+		{
+			name:            "background-processing routes to application topic",
+			serviceSelector: "background-processing",
+			expectedTopic:   "Raw.ApplicationLogs",
+		},
+		{
+			name:            "unknown selector routes to application topic",
+			serviceSelector: "unknown-service",
+			expectedTopic:   "Raw.ApplicationLogs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actualTopic := processor.topicForSelector(tt.serviceSelector)
+			assert.Equal(t, tt.expectedTopic, actualTopic,
+				"Service selector '%s' should route to '%s' but got '%s'",
+				tt.serviceSelector, tt.expectedTopic, actualTopic)
+		})
+	}
+}
+
+func TestBlobProcessor_MessageHeaders(t *testing.T) {
+	// Setup mocks
+	mockProducer := &MockProducer{}
+	mockBlobClient := &MockBlobClient{}
+	mockStorageFactory := &MockStorageClientFactory{}
+
+	// Test configuration
+	cfg := &config.Config{
+		Kafka: config.KafkaConfig{
+			BlobsTopic:       "test-blobs-topic",
+			ProxyTopic:       "Raw.ProxyLogs",
+			ApplicationTopic: "Raw.ApplicationLogs",
+			Partitions:       12,
+			Producer: config.ProducerConfig{
+				FlushTimeoutMs: 1000,
+			},
+		},
+		Worker: config.WorkerConfig{
+			ProcessingConfig: config.ProcessingConfig{
+				LineBufferSize: 1024,
+			},
+		},
+	}
+
+	// Create test data
+	testLines := []string{
+		"test log line 1",
+		"test log line 2",
+	}
+	gzippedContent, err := createGzippedContent(testLines)
+	require.NoError(t, err)
+
+	// Setup blob properties response
+	contentLength := int64(len(gzippedContent))
+	lastModified := time.Now()
+	propsResponse := blob.GetPropertiesResponse{
+		ContentLength: &contentLength,
+		LastModified:  &lastModified,
+	}
+
+	downloadResponse := createMockDownloadResponse(gzippedContent, contentLength)
+
+	// Configure mocks
+	mockStorageFactory.On("CreateBlobClient", "test-sub", "test-env", "test-container", "test-blob.gz").Return(mockBlobClient, nil)
+	mockBlobClient.On("GetProperties", mock.Anything, mock.Anything).Return(propsResponse, nil)
+	mockBlobClient.On("DownloadStream", mock.Anything, mock.Anything).Return(downloadResponse, nil)
+
+	// Capture produced messages to verify headers
+	var capturedMessages []*kafka.Message
+	mockProducer.On("Produce", mock.AnythingOfType("*kafka.Message"), mock.Anything).Run(func(args mock.Arguments) {
+		msg := args.Get(0).(*kafka.Message)
+		capturedMessages = append(capturedMessages, msg)
+	}).Return(nil)
+	mockProducer.On("Flush", 1000).Return(0)
+	mockProducer.On("Events").Return(make(chan kafka.Event))
+
+	// Create processor
+	processor := NewBlobProcessor(cfg, mockProducer, mockStorageFactory)
+
+	// Test processing with apache-proxy service selector
+	blobInfo := BlobProcessingInfo{
+		ContainerName:   "test-container",
+		BlobName:        "test-blob.gz",
+		StartOffset:     0,
+		Subscription:    "test-sub",
+		Environment:     "test-env",
+		ServiceSelector: "apache-proxy",
+	}
+
+	result, err := processor.ProcessBlob(context.Background(), blobInfo)
+
+	// Verify results
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Verify we captured the expected number of messages (2 log lines + 2 events)
+	require.GreaterOrEqual(t, len(capturedMessages), 2, "Should have captured at least 2 log line messages")
+
+	// Find the log line messages (they should go to Raw.ProxyLogs for apache-proxy)
+	var logMessages []*kafka.Message
+	for _, msg := range capturedMessages {
+		if msg.TopicPartition.Topic != nil && *msg.TopicPartition.Topic == "Raw.ProxyLogs" {
+			logMessages = append(logMessages, msg)
+		}
+	}
+
+	require.Len(t, logMessages, 2, "Should have 2 log line messages routed to Raw.ProxyLogs")
+
+	// Verify headers are set correctly on log messages
+	for i, msg := range logMessages {
+		t.Run(fmt.Sprintf("log_message_%d_headers", i+1), func(t *testing.T) {
+			require.NotNil(t, msg.Headers, "Message should have headers")
+
+			headerMap := make(map[string]string)
+			for _, header := range msg.Headers {
+				headerMap[header.Key] = string(header.Value)
+			}
+
+			assert.Equal(t, "apache-proxy", headerMap["service"], "Service header should be set correctly")
+			assert.Equal(t, "test-env", headerMap["environment"], "Environment header should be set correctly")
+			assert.Equal(t, "test-sub", headerMap["subscription"], "Subscription header should be set correctly")
+		})
+	}
+
+	// Verify mock expectations
+	mockStorageFactory.AssertExpectations(t)
+	mockBlobClient.AssertExpectations(t)
+	mockProducer.AssertExpectations(t)
 }
