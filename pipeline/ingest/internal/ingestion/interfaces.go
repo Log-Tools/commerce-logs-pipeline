@@ -48,11 +48,12 @@ type BlobProcessingResult struct {
 
 // BlobProcessingInfo contains information needed to process a blob
 type BlobProcessingInfo struct {
-	ContainerName string
-	BlobName      string
-	StartOffset   int64
-	Subscription  string
-	Environment   string
+	ContainerName   string
+	BlobName        string
+	StartOffset     int64
+	Subscription    string
+	Environment     string
+	ServiceSelector string
 }
 
 // BlobStateEvent represents a blob state event from Kafka

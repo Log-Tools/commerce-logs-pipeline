@@ -233,7 +233,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		// Check defaults
 		assert.Equal(t, "worker", cfg.Mode)
 		assert.Equal(t, "localhost:9092", cfg.Kafka.Brokers)
-		assert.Equal(t, "Ingestion.RawLogs", cfg.Kafka.IngestTopic)
+		assert.Equal(t, "Raw.ProxyLogs", cfg.Kafka.ProxyTopic)
+		assert.Equal(t, "Raw.ApplicationLogs", cfg.Kafka.ApplicationTopic)
+		assert.Equal(t, 12, cfg.Kafka.Partitions)
 		assert.Equal(t, time.Duration(30)*time.Second, cfg.Worker.ProcessingConfig.LoopInterval)
 	})
 }

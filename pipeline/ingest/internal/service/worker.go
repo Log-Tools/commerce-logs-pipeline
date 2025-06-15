@@ -35,13 +35,14 @@ type IngestionWorker struct {
 
 // BlobState tracks processing state for a blob
 type BlobState struct {
-	BlobName      string
-	Subscription  string
-	Environment   string
-	ContainerName string
-	State         string // "open" or "closed"
-	LastOffset    int64  // Last processed offset
-	LastUpdated   time.Time
+	BlobName        string
+	Subscription    string
+	Environment     string
+	ContainerName   string
+	ServiceSelector string
+	State           string // "open" or "closed"
+	LastOffset      int64  // Last processed offset
+	LastUpdated     time.Time
 }
 
 // NewIngestionWorker creates a new ingestion worker
@@ -283,6 +284,7 @@ func (w *IngestionWorker) updateBlobStateFromEvent(event *events.BlobStateEvent)
 		// Update existing state but preserve progress
 		blobState = existing
 		blobState.State = event.Status
+		blobState.ServiceSelector = event.ServiceSelector
 		blobState.LastUpdated = time.Now()
 
 		// Only update LastOffset if the event has a higher value (never go backwards)
@@ -297,13 +299,14 @@ func (w *IngestionWorker) updateBlobStateFromEvent(event *events.BlobStateEvent)
 	} else {
 		// Create new state for first-time tracking
 		blobState = &BlobState{
-			BlobName:      event.BlobName,
-			Subscription:  event.Subscription,
-			Environment:   event.Environment,
-			ContainerName: "commerce-logs-separated",
-			State:         event.Status,
-			LastOffset:    event.LastIngestedOffset,
-			LastUpdated:   time.Now(),
+			BlobName:        event.BlobName,
+			Subscription:    event.Subscription,
+			Environment:     event.Environment,
+			ContainerName:   "commerce-logs-separated",
+			ServiceSelector: event.ServiceSelector,
+			State:           event.Status,
+			LastOffset:      event.LastIngestedOffset,
+			LastUpdated:     time.Now(),
 		}
 		isNewBlob = true
 		log.Printf("Started tracking new blob %s with LastOffset %d", event.BlobName, event.LastIngestedOffset)
@@ -413,11 +416,12 @@ func (w *IngestionWorker) processBlobWithMetrics(ctx context.Context, blob *Blob
 	default:
 		// Create blob processing info
 		blobInfo := ingestion.BlobProcessingInfo{
-			ContainerName: blob.ContainerName,
-			BlobName:      blob.BlobName,
-			StartOffset:   blob.LastOffset,
-			Subscription:  blob.Subscription,
-			Environment:   blob.Environment,
+			ContainerName:   blob.ContainerName,
+			BlobName:        blob.BlobName,
+			StartOffset:     blob.LastOffset,
+			Subscription:    blob.Subscription,
+			Environment:     blob.Environment,
+			ServiceSelector: blob.ServiceSelector,
 		}
 
 		// Process the blob

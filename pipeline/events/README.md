@@ -43,8 +43,18 @@ log.retention.hours=168  # 7 days
 log.segment.hours=24
 ```
 
-### Ingestion.RawLogs
-Contains actual log lines extracted from blobs.
+### Raw.ProxyLogs
+Contains proxy log lines extracted from blobs.
+
+**Configuration**:
+```properties
+log.cleanup.policy=delete
+log.retention.hours=48   # 2 days (short retention for processing)
+log.segment.hours=6
+```
+
+### Raw.ApplicationLogs
+Contains application log lines extracted from blobs.
 
 **Configuration**:
 ```properties

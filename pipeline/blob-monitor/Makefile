@@ -1,7 +1,7 @@
 # Blob Monitor Service Makefile
 .PHONY: build clean install test test-unit test-integration run dev-build docker-build docker-run lint format help
 
-# Configuration
+	# Configuration
 BINARY_NAME := blob-monitor
 BIN_DIR := bin
 TARGET := $(BIN_DIR)/$(BINARY_NAME)
@@ -39,7 +39,7 @@ install:
 	cd $(CMD_DIR) && go install $(BUILD_FLAGS) .
 
 # Run all tests
-test: test-unit test-integration
+test: test-unit
 
 # Run unit tests (fast tests without external dependencies)
 test-unit:
@@ -50,7 +50,7 @@ test-unit:
 test-integration:
 	@echo "🧪 Running integration tests..."
 	@echo "⚠️  Integration tests require Docker for testcontainers"
-	go test -v -race -count=1 -tags=integration -timeout=5m .
+	go test -v -race -count=1 -tags=integration -timeout=5m ./...
 
 # Run tests with coverage
 test-coverage:

@@ -6,8 +6,11 @@ const (
 	// TopicBlobs contains blob lifecycle events (observed, listed, closed)
 	TopicBlobs = "Ingestion.Blobs"
 
-	// TopicRawLogs contains the actual log lines extracted from blobs
-	TopicRawLogs = "Ingestion.RawLogs"
+	// TopicRawProxyLogs contains proxy log lines extracted from blobs
+	TopicRawProxyLogs = "Raw.ProxyLogs"
+
+	// TopicRawApplicationLogs contains application log lines extracted from blobs
+	TopicRawApplicationLogs = "Raw.ApplicationLogs"
 
 	// TopicState contains pipeline state and completion events
 	TopicState = "Ingestion.State"

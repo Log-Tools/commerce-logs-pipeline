@@ -295,6 +295,6 @@ The service provides structured logging:
 - **Blob Monitor**: Publishes blob state events
 - **Azure Storage**: Source of log files
 
-### Downstream  
-- **Log Processing Pipeline**: Consumes from `Ingestion.RawLogs`
+### Downstream
+- **Log Processing Pipeline**: Consumes from `Raw.ProxyLogs` and `Raw.ApplicationLogs`
 - **Monitoring Systems**: Monitor blob completion events 
