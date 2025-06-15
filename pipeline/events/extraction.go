@@ -4,9 +4,21 @@ import (
 	"encoding/json"
 )
 
-// RawApplicationLogLine represents the raw JSON structure from the logging system
+// RawApplicationLogLine represents the raw JSON structure from the logging system (Format 1)
 type RawApplicationLogLine struct {
 	Logs       *RawLogs       `json:"Logs"`
+	Kubernetes *RawKubernetes `json:"kubernetes"`
+}
+
+// RawContainerLogLine represents container logs without nested logs structure (Format 2)
+type RawContainerLogLine struct {
+	// Core fields
+	Timestamp  string         `json:"@timestamp"`
+	Time       string         `json:"time,omitempty"`
+	Stream     string         `json:"stream,omitempty"`
+	Log        string         `json:"log"`
+	Process    string         `json:"_p,omitempty"`
+	RecordDate string         `json:"record_date,omitempty"`
 	Kubernetes *RawKubernetes `json:"kubernetes"`
 }
 

@@ -96,3 +96,4 @@ pipeline/ingest/ingest
 
 cli/test_venv/
 Progress.md
+pipeline/extraction/extraction

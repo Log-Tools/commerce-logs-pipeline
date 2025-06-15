@@ -277,6 +277,7 @@ func TestExtractor_ErrorCases(t *testing.T) {
 		name        string
 		logJSON     string
 		expectedErr string
+		expectSkip  bool
 	}{
 		{
 			name:        "Invalid JSON",
@@ -284,19 +285,19 @@ func TestExtractor_ErrorCases(t *testing.T) {
 			expectedErr: "failed to parse JSON",
 		},
 		{
-			name:        "Missing Logs structure",
-			logJSON:     `{"kubernetes": {"pod_name": "test"}}`,
-			expectedErr: "missing logs substructure",
+			name:       "Missing both Logs structure and log field (empty message)",
+			logJSON:    `{"kubernetes": {"pod_name": "test"}}`,
+			expectSkip: true, // This should be skipped silently, not produce an error
 		},
 		{
 			name:        "Contextmap without timeMillis (routes to app log path)",
 			logJSON:     `{"Logs": {"timeMillis": null, "contextMap": {"requestLine": "GET /test HTTP/1.1"}}}`,
-			expectedErr: "missing instant timestamp for application log",
+			expectedErr: "missing timestamp (neither instant nor timeMillis found)",
 		},
 		{
 			name:        "Missing instant for application log",
 			logJSON:     `{"Logs": {"level": "INFO", "message": "test"}}`,
-			expectedErr: "missing instant timestamp for application log",
+			expectedErr: "missing timestamp (neither instant nor timeMillis found)",
 		},
 		{
 			name:        "Invalid request line format",
@@ -307,9 +308,17 @@ func TestExtractor_ErrorCases(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := extractor.ExtractLog(tc.logJSON, source)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), tc.expectedErr)
+			result, err := extractor.ExtractLog(tc.logJSON, source)
+
+			if tc.expectSkip {
+				// Should be skipped silently (no error, no result)
+				assert.NoError(t, err)
+				assert.Nil(t, result)
+			} else {
+				// Should produce an error
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.expectedErr)
+			}
 		})
 	}
 }
@@ -418,5 +427,411 @@ func TestExtractor_DifferentEnvironments(t *testing.T) {
 				assert.Equal(t, "Test log", appLog.Message)
 			})
 		}
+	}
+}
+
+// Test extraction from container logs (Format 2)
+func TestExtractor_ExtractLog_ContainerLogs(t *testing.T) {
+	extractor := NewExtractor()
+
+	testCases := []struct {
+		name     string
+		logJSON  string
+		expected events.ApplicationLog
+	}{
+		{
+			name: "Container log with INFO level",
+			logJSON: `{
+				"@timestamp": "2025-06-13T12:11:57.259321Z",
+				"stream": "stderr",
+				"_p": "F",
+				"log": "INFO: property name: \"ccv2.additional.catalina.opts\"",
+				"record_date": "20250613",
+				"time": "2025-06-13T12:11:57.259321544Z",
+				"kubernetes": {
+					"pod_name": "api-869d548fdb-8hzh7"
+				}
+			}`,
+			expected: events.ApplicationLog{
+				TimestampNanos: 0, // will verify > 0 in test
+				Level:          "INFO",
+				Logger:         "api", // extracted from pod name
+				Thread:         "",
+				Message:        "INFO: property name: \"ccv2.additional.catalina.opts\"",
+				Thrown:         nil,
+				ClientIP:       "",
+				PodName:        "api-869d548fdb-8hzh7",
+			},
+		},
+		{
+			name: "Container log with ERROR level",
+			logJSON: `{
+				"@timestamp": "2025-06-13T15:30:45.123456Z",
+				"stream": "stdout",
+				"log": "ERROR: Failed to connect to database",
+				"kubernetes": {
+					"pod_name": "backoffice-abc123-def456"
+				}
+			}`,
+			expected: events.ApplicationLog{
+				Level:   "ERROR",
+				Logger:  "backoffice",
+				Message: "ERROR: Failed to connect to database",
+				PodName: "backoffice-abc123-def456",
+			},
+		},
+		{
+			name: "Container log with DEBUG level",
+			logJSON: `{
+				"time": "2025-06-13T08:15:30.987654321Z",
+				"log": "DEBUG: Processing request batch",
+				"kubernetes": {
+					"pod_name": "backgroundprocessing-xyz789-uvw123"
+				}
+			}`,
+			expected: events.ApplicationLog{
+				Level:   "DEBUG",
+				Logger:  "backgroundprocessing",
+				Message: "DEBUG: Processing request batch",
+				PodName: "backgroundprocessing-xyz789-uvw123",
+			},
+		},
+		{
+			name: "Container log with no explicit level (defaults to INFO)",
+			logJSON: `{
+				"@timestamp": "2025-06-13T20:45:12.456789Z",
+				"log": "Starting application server on port 8080",
+				"kubernetes": {
+					"pod_name": "api-5f7d8c9b4d-x7k2p"
+				}
+			}`,
+			expected: events.ApplicationLog{
+				Level:   "INFO", // default fallback
+				Logger:  "api",
+				Message: "Starting application server on port 8080",
+				PodName: "api-5f7d8c9b4d-x7k2p",
+			},
+		},
+		{
+			name: "Container log with WARN level",
+			logJSON: `{
+				"@timestamp": "2025-06-13T16:22:38.111222Z",
+				"log": "WARN: Connection timeout exceeded, retrying...",
+				"kubernetes": {
+					"pod_name": "proxy-nginx-456def-789ghi"
+				}
+			}`,
+			expected: events.ApplicationLog{
+				Level:   "WARN",
+				Logger:  "proxy-nginx",
+				Message: "WARN: Connection timeout exceeded, retrying...",
+				PodName: "proxy-nginx-456def-789ghi",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			source := events.LogSource{Service: "test", Environment: "D1", Subscription: "cp2"}
+
+			result, err := extractor.ExtractLog(tc.logJSON, source)
+			require.NoError(t, err)
+
+			appLog, ok := result.(*events.ApplicationLog)
+			require.True(t, ok, "Expected ApplicationLog")
+
+			assert.Equal(t, tc.expected.Level, appLog.Level)
+			assert.Equal(t, tc.expected.Logger, appLog.Logger)
+			assert.Equal(t, tc.expected.Thread, appLog.Thread)
+			assert.Equal(t, tc.expected.Message, appLog.Message)
+			assert.Equal(t, tc.expected.PodName, appLog.PodName)
+			assert.Nil(t, appLog.Thrown)
+			assert.Equal(t, "", appLog.ClientIP)
+
+			// Verify timestamp was parsed correctly (if not zero in expected)
+			if tc.expected.TimestampNanos != 0 {
+				assert.Equal(t, tc.expected.TimestampNanos, appLog.TimestampNanos)
+			} else {
+				assert.Greater(t, appLog.TimestampNanos, int64(0))
+			}
+
+			// Test validation
+			err = extractor.ValidateExtractedLog(result)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// Test case for application log with timeMillis and contextMap (should not be misidentified as HTTP log)
+func TestExtractor_ApplicationLogWithTimeMillisAndContextMap(t *testing.T) {
+	extractor := NewExtractor()
+	source := events.LogSource{Service: "backoffice", Environment: "D1", Subscription: "cp2"}
+
+	// This is the actual problematic log from the error report
+	logJSON := `{
+		"@timestamp": "2025-06-12T14:56:11.743010Z",
+		"time": "2025-06-12T14:56:11.743010328Z",
+		"kubernetes": {
+			"pod_name": "backoffice-5ff5bf97b9-z6rg5"
+		},
+		"logs": {
+			"loggerName": "de.hybris.ccv2.listeners.CCv2LifecycleListener",
+			"message": "SHUTDOWN HOOK IN PROCESS",
+			"timeMillis": 1749740171742,
+			"contextMap": {
+				"sourceMethodName": "lambda$new$0",
+				"sourceClassName": "de.hybris.ccv2.listeners.CCv2LifecycleListener"
+			},
+			"threadId": 373,
+			"threadPriority": 1,
+			"origin": "catalina",
+			"thread": "Thread-46",
+			"level": "INFO"
+		}
+	}`
+
+	result, err := extractor.ExtractLog(logJSON, source)
+	require.NoError(t, err, "Should successfully extract application log")
+
+	// Should be extracted as ApplicationLog, not HTTPRequestLog
+	appLog, ok := result.(*events.ApplicationLog)
+	require.True(t, ok, "Expected ApplicationLog, got %T", result)
+
+	// Verify extracted fields
+	assert.Equal(t, "INFO", appLog.Level)
+	assert.Equal(t, "de.hybris.ccv2.listeners.CCv2LifecycleListener", appLog.Logger)
+	assert.Equal(t, "SHUTDOWN HOOK IN PROCESS", appLog.Message)
+	assert.Equal(t, "Thread-46", appLog.Thread)
+	assert.Equal(t, "backoffice-5ff5bf97b9-z6rg5", appLog.PodName)
+	assert.Equal(t, int64(1749740171742*1e6), appLog.TimestampNanos) // timeMillis converted to nanos
+	assert.Nil(t, appLog.Thrown)
+}
+
+// Test the exact failing case from user's error
+func TestExtractor_ExtractLog_UserErrorCase(t *testing.T) {
+	extractor := NewExtractor()
+
+	// This is the exact log that was failing
+	errorLogJSON := `{
+		"@timestamp": "2025-06-13T12:11:57.259321Z",
+		"stream": "stderr",
+		"_p": "F",
+		"log": "INFO: property name: \"ccv2.additional.catalina.opts\"",
+		"record_date": "20250613",
+		"time": "2025-06-13T12:11:57.259321544Z",
+		"kubernetes": {
+			"annotations": {
+				"ccv2_cx_sap_com_build-code": "20250613.2",
+				"cni_projectcalico_org_containerID": "32a88d1d8627d98fb43555e7be24d112a5b7f7577b6792b39285caeb7f7ec58f",
+				"ccv2_cx_sap_com_restart-requested-at": "2024-06-30 17:30:34.757",
+				"ccv2_cx_sap_com_deployment-id": "1409894",
+				"data-ingest_dynatrace_com_injected": "true",
+				"oneagent_dynatrace_com_injected": "true",
+				"cni_projectcalico_org_podIP": "10.244.1.20/32",
+				"fluentbit_io_parser": "mt-api",
+				"cni_projectcalico_org_podIPs": "10.244.1.20/32",
+				"platform-security-configmap-hash": "2332086959",
+				"dynakube_dynatrace_com_injected": "true"
+			},
+			"container_hash": "c4oemlbtqrccbmanage4z0p.azurecr.io/ccbmanage4/platform@sha256:7dcbb35f5654b0e815bdc740eaae23bfc0b9d17cd742cd43a70daad94a86ec55",
+			"container_image": "c4oemlbtqrccbmanage4z0p.azurecr.io/ccbmanage4/platform:hash-363c9483fb455492586247588d8cda2d72ecd6b5276fb212dfa1da521435a4ee",
+			"pod_ip": "10.244.1.20",
+			"host": "aks-guhn66afpt-25077532-vmss00001b",
+			"namespace_name": "default",
+			"labels": {
+				"app_kubernetes_io_name": "hybris",
+				"pod-template-hash": "869d548fdb",
+				"ccv2_cx_sap_com_service-version": "default",
+				"app_kubernetes_io_part-of": "hybris",
+				"ccv2_cx_sap_com_service-name": "api",
+				"ccv2_cx_sap_com_platform-aspect": "api",
+				"app_kubernetes_io_component": "backend",
+				"app_kubernetes_io_managed-by": "hybris-operator"
+			},
+			"pod_name": "api-869d548fdb-8hzh7",
+			"container_name": "platform",
+			"pod_id": "eace775d-76bc-447b-866d-bb3f22f1337c",
+			"docker_id": "05ce9b66487d08c56bba9a7f3f67d812ae63b4add937909191f10fdc72177c8a"
+		}
+	}`
+
+	source := events.LogSource{Service: "", Environment: "", Subscription: ""}
+
+	result, err := extractor.ExtractLog(errorLogJSON, source)
+	require.NoError(t, err, "This should no longer fail with 'missing logs substructure'")
+
+	appLog, ok := result.(*events.ApplicationLog)
+	require.True(t, ok, "Expected ApplicationLog")
+
+	assert.Equal(t, "INFO", appLog.Level)
+	assert.Equal(t, "api", appLog.Logger) // extracted from pod name
+	assert.Equal(t, "", appLog.Thread)    // container logs don't have thread info
+	assert.Equal(t, "INFO: property name: \"ccv2.additional.catalina.opts\"", appLog.Message)
+	assert.Equal(t, "api-869d548fdb-8hzh7", appLog.PodName)
+	assert.Nil(t, appLog.Thrown)
+	assert.Equal(t, "", appLog.ClientIP)
+	assert.Greater(t, appLog.TimestampNanos, int64(0))
+
+	// Test validation passes
+	err = extractor.ValidateExtractedLog(result)
+	assert.NoError(t, err)
+}
+
+// Test handling of empty log messages
+func TestExtractor_EmptyLogMessages(t *testing.T) {
+	extractor := NewExtractor()
+	source := events.LogSource{Service: "test", Environment: "D1", Subscription: "cp2"}
+
+	testCases := []struct {
+		name          string
+		logJSON       string
+		expectError   bool
+		expectSkipped bool
+		errorMsg      string
+	}{
+		{
+			name: "Container log with empty message should be skipped",
+			logJSON: `{
+				"@timestamp": "2025-06-12T15:30:33.192086Z",
+				"stream": "stdout",
+				"log": "",
+				"kubernetes": {
+					"pod_name": "backgroundprocessing-58c69494d9-7xksj"
+				}
+			}`,
+			expectError:   false,
+			expectSkipped: true,
+		},
+		{
+			name: "Container log with whitespace-only message should be skipped",
+			logJSON: `{
+				"@timestamp": "2025-06-12T15:30:33.192086Z",
+				"stream": "stdout",
+				"log": "   \n  \t  ",
+				"kubernetes": {
+					"pod_name": "backgroundprocessing-58c69494d9-7xksj"
+				}
+			}`,
+			expectError:   false,
+			expectSkipped: true,
+		},
+		{
+			name: "Structured application log with empty message should be skipped",
+			logJSON: `{
+				"logs": {
+					"instant": {
+						"epochSecond": 1734243648,
+						"nanoOfSecond": 123456789
+					},
+					"level": "INFO",
+					"loggerName": "com.test.Service",
+					"thread": "main",
+					"message": ""
+				},
+				"kubernetes": {
+					"pod_name": "test-service-123"
+				}
+			}`,
+			expectError:   false,
+			expectSkipped: true,
+		},
+		{
+			name: "Container log with valid message should work",
+			logJSON: `{
+				"@timestamp": "2025-06-12T15:30:33.192086Z",
+				"stream": "stdout",
+				"log": "This is a valid log message",
+				"kubernetes": {
+					"pod_name": "backgroundprocessing-58c69494d9-7xksj"
+				}
+			}`,
+			expectError:   false,
+			expectSkipped: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := extractor.ExtractLog(tc.logJSON, source)
+
+			if tc.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errorMsg)
+				assert.Nil(t, result)
+			} else if tc.expectSkipped {
+				// Skipped messages return nil, nil (no error, no result)
+				assert.NoError(t, err)
+				assert.Nil(t, result)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, result)
+				// Verify it's a valid ApplicationLog
+				appLog, ok := result.(*events.ApplicationLog)
+				assert.True(t, ok)
+				assert.NotEmpty(t, appLog.Message)
+			}
+		})
+	}
+}
+
+// Test that demonstrates the fix for Go's nil pointer interface issue
+func TestExtractor_NilPointerInterfaceFix(t *testing.T) {
+	extractor := NewExtractor()
+	source := events.LogSource{Service: "test", Environment: "D1", Subscription: "cp2"}
+
+	testCases := []struct {
+		name    string
+		logJSON string
+	}{
+		{
+			name: "Container log with empty message returns true nil",
+			logJSON: `{
+				"@timestamp": "2025-06-12T15:30:33.192086Z",
+				"log": "",
+				"kubernetes": {"pod_name": "test-pod"}
+			}`,
+		},
+		{
+			name: "Structured log with empty message returns true nil",
+			logJSON: `{
+				"logs": {
+					"instant": {"epochSecond": 1734243648, "nanoOfSecond": 123456789},
+					"level": "INFO",
+					"loggerName": "test.Logger",
+					"thread": "main",
+					"message": ""
+				},
+				"kubernetes": {"pod_name": "test-pod"}
+			}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := extractor.ExtractLog(tc.logJSON, source)
+
+			// Should return true nil (not a nil pointer wrapped in interface)
+			assert.NoError(t, err)
+			assert.Nil(t, result)
+
+			// This is the key test: result should be truly nil, not a wrapped nil pointer
+			// In Go, this would fail if we returned (*events.ApplicationLog)(nil) as interface{}
+			if result != nil {
+				t.Errorf("Expected truly nil result, but got: %v (type: %T)", result, result)
+			}
+
+			// Additional check: if we somehow got a non-nil interface with nil content,
+			// this would catch it
+			switch log := result.(type) {
+			case *events.ApplicationLog:
+				if log == nil {
+					t.Error("Got nil *events.ApplicationLog wrapped in non-nil interface{}")
+				}
+			case *events.HTTPRequestLog:
+				if log == nil {
+					t.Error("Got nil *events.HTTPRequestLog wrapped in non-nil interface{}")
+				}
+			}
+		})
 	}
 }

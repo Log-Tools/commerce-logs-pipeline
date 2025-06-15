@@ -219,6 +219,28 @@ func (s *Service) processMessageConcurrent(ctx context.Context, workerID int, ms
 		return s.consumer.CommitMessage(msg)
 	}
 
+	// If extractedLog is nil (but no error), it means the message should be silently skipped
+	// This happens for empty log messages which are common in container logs
+	if extractedLog == nil {
+		atomic.AddInt64(&s.successCount, 1) // Count as successful (not an error)
+		return s.consumer.CommitMessage(msg)
+	}
+
+	// Additional check for nil pointers wrapped in interfaces (Go gotcha)
+	// This can happen when a nil *events.ApplicationLog is returned as interface{}
+	switch log := extractedLog.(type) {
+	case *events.HTTPRequestLog:
+		if log == nil {
+			atomic.AddInt64(&s.successCount, 1) // Count as successful (not an error)
+			return s.consumer.CommitMessage(msg)
+		}
+	case *events.ApplicationLog:
+		if log == nil {
+			atomic.AddInt64(&s.successCount, 1) // Count as successful (not an error)
+			return s.consumer.CommitMessage(msg)
+		}
+	}
+
 	// Validate extracted log if validation is enabled
 	if s.config.Processing.EnableValidation {
 		if err := s.extractor.ValidateExtractedLog(extractedLog); err != nil {

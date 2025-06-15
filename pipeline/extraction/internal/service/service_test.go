@@ -314,3 +314,62 @@ func TestClose(t *testing.T) {
 	mockConsumer.AssertExpectations(t)
 	mockProducer.AssertExpectations(t)
 }
+
+// Test handling of empty messages that return nil, nil from extractor
+func TestService_EmptyMessageHandling(t *testing.T) {
+	// Create a mock extractor that returns nil, nil for empty messages
+	mockExtractor := &MockExtractor{}
+	mockExtractor.On("ExtractLog", mock.AnythingOfType("string"), mock.AnythingOfType("events.LogSource")).
+		Return(nil, nil) // Simulate empty message
+
+	mockConsumer := &MockConsumer{}
+	mockProducer := &MockProducer{}
+	mockMetrics := &MockMetricsCollector{}
+
+	// Set up mock expectations for metrics that are always called
+	mockMetrics.On("IncrementMessagesProcessed").Return()
+	mockMetrics.On("RecordProcessingLatency", mock.AnythingOfType("int64")).Return()
+
+	// Create config with validation enabled to test the nil check before validation
+	config := &config.Config{
+		Processing: config.ProcessingConfig{
+			EnableValidation: true,
+			SkipInvalidLogs:  false,
+		},
+	}
+
+	service := NewService(config, mockConsumer, mockProducer, mockExtractor, mockMetrics)
+
+	// Create a test message
+	msg := &kafka.Message{
+		Key:   []byte("test-key"),
+		Value: []byte(""), // Empty message
+		Headers: []kafka.Header{
+			{Key: "service", Value: []byte("test-service")},
+			{Key: "environment", Value: []byte("test-env")},
+			{Key: "subscription", Value: []byte("test-sub")},
+		},
+	}
+
+	// Mock the consumer to commit the message
+	mockConsumer.On("CommitMessage", msg).Return(nil)
+
+	// Process the message
+	ctx := context.Background()
+	err := service.processMessageConcurrent(ctx, 1, msg)
+
+	// Should not return an error
+	assert.NoError(t, err)
+
+	// Verify that ExtractLog was called
+	mockExtractor.AssertExpectations(t)
+
+	// Verify that CommitMessage was called (message should be committed)
+	mockConsumer.AssertExpectations(t)
+
+	// Verify that no producer calls were made (no output or error messages)
+	mockProducer.AssertNotCalled(t, "Produce")
+
+	// Verify that success count was incremented
+	assert.Equal(t, int64(1), service.successCount)
+}
