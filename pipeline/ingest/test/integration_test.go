@@ -143,6 +143,8 @@ func TestConfigurationIntegration(t *testing.T) {
 		// Set test environment
 		os.Setenv("INGEST_MODE", "cli")
 		os.Setenv("KAFKA_BROKERS", "localhost:9092")
+		os.Setenv("KAFKA_PROXY_TOPIC", "Raw.ProxyLogs")
+		os.Setenv("KAFKA_APP_TOPIC", "Raw.ApplicationLogs")
 		os.Setenv("SUBSCRIPTION_ID", "test-sub")
 		os.Setenv("ENVIRONMENT", "test-env")
 		os.Setenv("AZURE_STORAGE_CONTAINER_NAME", "test-container")
@@ -168,7 +170,10 @@ func TestConfigurationIntegration(t *testing.T) {
 				StartOffset:    0,
 			},
 			Kafka: config.KafkaConfig{
-				Brokers: "localhost:9092",
+				Brokers:          "localhost:9092",
+				ProxyTopic:       "Raw.ProxyLogs",
+				ApplicationTopic: "Raw.ApplicationLogs",
+				Partitions:       1,
 			},
 		}
 
@@ -285,9 +290,12 @@ func TestEndToEndProcessingIntegration(t *testing.T) {
 				StartOffset:    0,
 			},
 			Kafka: config.KafkaConfig{
-				Brokers:     kafkaBrokers,
-				IngestTopic: testTopic,
-				BlobsTopic:  testTopic + "-blobs",
+				Brokers:          kafkaBrokers,
+				IngestTopic:      testTopic,
+				BlobsTopic:       testTopic + "-blobs",
+				ProxyTopic:       "Raw.ProxyLogs",
+				ApplicationTopic: "Raw.ApplicationLogs",
+				Partitions:       1,
 				Producer: config.ProducerConfig{
 					Acks:                "all",
 					FlushTimeoutMs:      30000,

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -32,6 +33,10 @@ type BlobMonitorIntegrationSuite struct {
 
 // Initializes containerized Kafka environment for realistic testing conditions
 func (suite *BlobMonitorIntegrationSuite) SetupSuite() {
+	if _, err := exec.LookPath("docker"); err != nil {
+		suite.T().Skip("Docker not available for integration tests")
+	}
+
 	ctx := context.Background()
 
 	// Start Kafka container
