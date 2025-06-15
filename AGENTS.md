@@ -1,6 +1,6 @@
-# Working with Kafka in this Environment
+# Working with Kafka without Docker
 
-Docker is not available, so the usual `make dev-up` workflow cannot start Kafka. Instead run a local broker manually.
+If Docker is not available, the usual `make dev-up` workflow cannot start Kafka. Instead run a local broker manually.
 
 The broker listens on `localhost:9092`. Check `kafka.log` for startup progress.
 
