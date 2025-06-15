@@ -43,7 +43,9 @@ worker:
 # Kafka configuration
 kafka:
   brokers: "localhost:9092"
-  ingest_topic: "Ingestion.RawLogs"
+  proxy_topic: "Raw.ProxyLogs"
+  app_topic: "Raw.ApplicationLogs"
+  partitions: 12
   blobs_topic: "Ingestion.Blobs"
   
   producer:

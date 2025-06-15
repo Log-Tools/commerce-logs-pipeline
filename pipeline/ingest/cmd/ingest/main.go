@@ -128,11 +128,12 @@ func runCLIMode(ctx context.Context, cfg *ingestConfig.Config) error {
 
 	// Create processing info from CLI config
 	processingInfo := ingestion.BlobProcessingInfo{
-		ContainerName: cfg.CLI.ContainerName,
-		BlobName:      cfg.CLI.BlobName,
-		StartOffset:   cfg.CLI.StartOffset,
-		Subscription:  cfg.CLI.SubscriptionID,
-		Environment:   cfg.CLI.Environment,
+		ContainerName:   cfg.CLI.ContainerName,
+		BlobName:        cfg.CLI.BlobName,
+		StartOffset:     cfg.CLI.StartOffset,
+		Subscription:    cfg.CLI.SubscriptionID,
+		Environment:     cfg.CLI.Environment,
+		ServiceSelector: cfg.CLI.ServiceSelector,
 	}
 
 	// Process the blob

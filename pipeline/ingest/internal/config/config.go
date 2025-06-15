@@ -39,11 +39,12 @@ type StorageConfig struct {
 
 // CLIConfig contains configuration for CLI mode (backwards compatibility)
 type CLIConfig struct {
-	SubscriptionID string `yaml:"subscription_id" env:"SUBSCRIPTION_ID"`
-	Environment    string `yaml:"environment" env:"ENVIRONMENT"`
-	ContainerName  string `yaml:"container_name" env:"AZURE_STORAGE_CONTAINER_NAME"`
-	BlobName       string `yaml:"blob_name" env:"AZURE_STORAGE_BLOB_NAME"`
-	StartOffset    int64  `yaml:"start_offset" env:"START_OFFSET" default:"0"`
+	SubscriptionID  string `yaml:"subscription_id" env:"SUBSCRIPTION_ID"`
+	Environment     string `yaml:"environment" env:"ENVIRONMENT"`
+	ContainerName   string `yaml:"container_name" env:"AZURE_STORAGE_CONTAINER_NAME"`
+	BlobName        string `yaml:"blob_name" env:"AZURE_STORAGE_BLOB_NAME"`
+	StartOffset     int64  `yaml:"start_offset" env:"START_OFFSET" default:"0"`
+	ServiceSelector string `yaml:"service_selector" env:"SERVICE_SELECTOR"`
 }
 
 // WorkerConfig contains configuration for worker mode
@@ -105,8 +106,17 @@ type ProcessingConfig struct {
 type KafkaConfig struct {
 	Brokers string `yaml:"brokers" env:"KAFKA_BROKERS" default:"localhost:9092"`
 
-	// Topic for ingested logs
+	// Topic for ingested logs (deprecated, use ProxyTopic/ApplicationTopic)
 	IngestTopic string `yaml:"ingest_topic" env:"KAFKA_INGEST_TOPIC" default:"Ingestion.RawLogs"`
+
+	// Topic for proxy log lines
+	ProxyTopic string `yaml:"proxy_topic" env:"KAFKA_PROXY_TOPIC" default:"Raw.ProxyLogs"`
+
+	// Topic for application log lines
+	ApplicationTopic string `yaml:"app_topic" env:"KAFKA_APP_TOPIC" default:"Raw.ApplicationLogs"`
+
+	// Number of partitions for raw log topics
+	Partitions int `yaml:"partitions" env:"KAFKA_RAW_PARTITIONS" default:"12"`
 
 	// Topic for blob completion events
 	BlobsTopic string `yaml:"blobs_topic" env:"KAFKA_BLOBS_TOPIC" default:"Ingestion.Blobs"`
@@ -207,6 +217,15 @@ func (c *Config) validateCommon() error {
 	if c.Kafka.Brokers == "" {
 		return fmt.Errorf("kafka brokers are required")
 	}
+	if c.Kafka.ProxyTopic == "" {
+		return fmt.Errorf("proxy_topic is required")
+	}
+	if c.Kafka.ApplicationTopic == "" {
+		return fmt.Errorf("app_topic is required")
+	}
+	if c.Kafka.Partitions <= 0 {
+		return fmt.Errorf("partitions must be positive")
+	}
 	return nil
 }
 
@@ -238,11 +257,12 @@ func LoadConfigFromEnv() (*Config, error) {
 		Mode:     getEnv("INGEST_MODE", "worker"),
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 		CLI: CLIConfig{
-			SubscriptionID: os.Getenv("SUBSCRIPTION_ID"),
-			Environment:    os.Getenv("ENVIRONMENT"),
-			ContainerName:  os.Getenv("AZURE_STORAGE_CONTAINER_NAME"),
-			BlobName:       os.Getenv("AZURE_STORAGE_BLOB_NAME"),
-			StartOffset:    parseInt64Env("START_OFFSET", 0),
+			SubscriptionID:  os.Getenv("SUBSCRIPTION_ID"),
+			Environment:     os.Getenv("ENVIRONMENT"),
+			ContainerName:   os.Getenv("AZURE_STORAGE_CONTAINER_NAME"),
+			BlobName:        os.Getenv("AZURE_STORAGE_BLOB_NAME"),
+			StartOffset:     parseInt64Env("START_OFFSET", 0),
+			ServiceSelector: os.Getenv("SERVICE_SELECTOR"),
 		},
 		Worker: WorkerConfig{
 			BlobStateTopic: getEnv("BLOB_STATE_TOPIC", "Ingestion.BlobState"),
@@ -265,9 +285,12 @@ func LoadConfigFromEnv() (*Config, error) {
 			},
 		},
 		Kafka: KafkaConfig{
-			Brokers:     getEnv("KAFKA_BROKERS", "localhost:9092"),
-			IngestTopic: getEnv("KAFKA_INGEST_TOPIC", "Ingestion.RawLogs"),
-			BlobsTopic:  getEnv("KAFKA_BLOBS_TOPIC", "Ingestion.Blobs"),
+			Brokers:          getEnv("KAFKA_BROKERS", "localhost:9092"),
+			IngestTopic:      getEnv("KAFKA_INGEST_TOPIC", "Ingestion.RawLogs"),
+			ProxyTopic:       getEnv("KAFKA_PROXY_TOPIC", "Raw.ProxyLogs"),
+			ApplicationTopic: getEnv("KAFKA_APP_TOPIC", "Raw.ApplicationLogs"),
+			Partitions:       parseIntEnv("KAFKA_RAW_PARTITIONS", 12),
+			BlobsTopic:       getEnv("KAFKA_BLOBS_TOPIC", "Ingestion.Blobs"),
 			Producer: ProducerConfig{
 				Acks:                getEnv("KAFKA_PRODUCER_ACKS", "all"),
 				FlushTimeoutMs:      parseIntEnv("KAFKA_PRODUCER_FLUSH_TIMEOUT_MS", 120000),
@@ -374,6 +397,15 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Kafka.IngestTopic == "" {
 		cfg.Kafka.IngestTopic = "Ingestion.RawLogs"
+	}
+	if cfg.Kafka.ProxyTopic == "" {
+		cfg.Kafka.ProxyTopic = "Raw.ProxyLogs"
+	}
+	if cfg.Kafka.ApplicationTopic == "" {
+		cfg.Kafka.ApplicationTopic = "Raw.ApplicationLogs"
+	}
+	if cfg.Kafka.Partitions == 0 {
+		cfg.Kafka.Partitions = 12
 	}
 	if cfg.Kafka.BlobsTopic == "" {
 		cfg.Kafka.BlobsTopic = "Ingestion.Blobs"

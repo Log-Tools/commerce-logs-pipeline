@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
@@ -21,6 +23,21 @@ type blobProcessor struct {
 	config         *config.Config
 	producer       Producer
 	storageFactory StorageClientFactory
+}
+
+// partitionForBlob calculates the partition for a given blob name
+func (p *blobProcessor) partitionForBlob(blobName string) int32 {
+	h := fnv.New32a()
+	h.Write([]byte(blobName))
+	return int32(h.Sum32() % uint32(p.config.Kafka.Partitions))
+}
+
+// topicForSelector returns the raw log topic based on service selector
+func (p *blobProcessor) topicForSelector(selector string) string {
+	if strings.Contains(selector, "proxy") {
+		return p.config.Kafka.ProxyTopic
+	}
+	return p.config.Kafka.ApplicationTopic
 }
 
 // NewBlobProcessor creates a new blob processor
@@ -170,8 +187,11 @@ func (p *blobProcessor) processDownloadedContent(ctx context.Context, body io.Re
 		kafkaKey := events.GenerateBlobEventKey(blobInfo.Subscription, blobInfo.Environment,
 			fmt.Sprintf("line-%d", lineCounter), blobInfo.BlobName)
 
+		topic := p.topicForSelector(blobInfo.ServiceSelector)
+		partition := p.partitionForBlob(blobInfo.BlobName)
+
 		message := &kafka.Message{
-			TopicPartition: kafka.TopicPartition{Topic: &p.config.Kafka.IngestTopic, Partition: -1},
+			TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: partition},
 			Key:            []byte(kafkaKey),
 			Value:          []byte(line),
 		}

@@ -1,10 +1,10 @@
 # Commerce Logs Pipeline - Docker Operations & Go Builds
 .PHONY: help dev-up dev-down build test clean build-go clean-go test-go install-go status quick-start
-
-# Go modules
-MODULES := pipeline/blob-monitor pipeline/events pipeline/ingest pipeline/traces tools/opensearch-init
-
-# Default target
+	
+	# Go modules
+	MODULES := pipeline/blob-monitor pipeline/events pipeline/ingest pipeline/traces tools/opensearch-init
+	
+	# Default target
 help:
 	@echo "Commerce Logs Pipeline - Commands"
 	@echo "================================="
@@ -61,8 +61,8 @@ clean-go:
 test-go:
 	@echo "🧪 Testing all Go modules..."
 	@for module in $(MODULES); do \
-		echo "Testing $$module..."; \
-		/usr/bin/make -C $$module test; \
+	echo "Testing $$module..."; \
+	/usr/bin/make -C $$module test; \
 	done
 	@echo "✅ All Go modules tested!"
 

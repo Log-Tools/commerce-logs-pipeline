@@ -267,17 +267,20 @@ func TestKafkaTopicConfiguration(t *testing.T) {
 	t.Run("validates kafka topic configuration", func(t *testing.T) {
 		cfg := &config.Config{
 			Kafka: config.KafkaConfig{
-				IngestTopic: "Ingestion.RawLogs",
-				BlobsTopic:  "Ingestion.Blobs",
-				Brokers:     "localhost:9092",
+				ProxyTopic:       "Raw.ProxyLogs",
+				ApplicationTopic: "Raw.ApplicationLogs",
+				Partitions:       12,
+				BlobsTopic:       "Ingestion.Blobs",
+				Brokers:          "localhost:9092",
 			},
 		}
 
-		assert.Equal(t, "Ingestion.RawLogs", cfg.Kafka.IngestTopic)
+		assert.Equal(t, "Raw.ProxyLogs", cfg.Kafka.ProxyTopic)
+		assert.Equal(t, "Raw.ApplicationLogs", cfg.Kafka.ApplicationTopic)
 		assert.Equal(t, "Ingestion.Blobs", cfg.Kafka.BlobsTopic)
 		assert.Equal(t, "localhost:9092", cfg.Kafka.Brokers)
-		assert.NotEmpty(t, cfg.Kafka.IngestTopic)
-		assert.NotEmpty(t, cfg.Kafka.BlobsTopic)
+		assert.NotEmpty(t, cfg.Kafka.ProxyTopic)
+		assert.NotEmpty(t, cfg.Kafka.ApplicationTopic)
 	})
 
 	t.Run("validates producer configuration", func(t *testing.T) {
@@ -379,8 +382,10 @@ func TestBlobProcessor_ProcessBlob(t *testing.T) {
 		// Test configuration
 		cfg := &config.Config{
 			Kafka: config.KafkaConfig{
-				BlobsTopic:  "test-blobs-topic",
-				IngestTopic: "test-ingest-topic",
+				BlobsTopic:       "test-blobs-topic",
+				ProxyTopic:       "test-proxy-topic",
+				ApplicationTopic: "test-app-topic",
+				Partitions:       12,
 				Producer: config.ProducerConfig{
 					FlushTimeoutMs: 1000,
 				},
@@ -504,8 +509,10 @@ func TestBlobProcessor_ProcessBlob(t *testing.T) {
 	t.Run("validates completion message persistence configuration", func(t *testing.T) {
 		cfg := &config.Config{
 			Kafka: config.KafkaConfig{
-				BlobsTopic:  "test-blobs-topic",
-				IngestTopic: "test-ingest-topic",
+				BlobsTopic:       "test-blobs-topic",
+				ProxyTopic:       "test-proxy-topic",
+				ApplicationTopic: "test-app-topic",
+				Partitions:       12,
 				Producer: config.ProducerConfig{
 					FlushTimeoutMs: 1000,
 				},
@@ -519,7 +526,7 @@ func TestBlobProcessor_ProcessBlob(t *testing.T) {
 
 		// Test the configuration and interface behavior
 		assert.Equal(t, "test-blobs-topic", cfg.Kafka.BlobsTopic)
-		assert.Equal(t, "test-ingest-topic", cfg.Kafka.IngestTopic)
+		assert.Equal(t, "test-proxy-topic", cfg.Kafka.ProxyTopic)
 		assert.Equal(t, 1000, cfg.Kafka.Producer.FlushTimeoutMs)
 		assert.Equal(t, 1024, cfg.Worker.ProcessingConfig.LineBufferSize)
 	})
