@@ -119,7 +119,9 @@ func (w *IngestionWorker) eventDrivenLoop(ctx context.Context) error {
 			// Consume all available messages in a batch
 			messages, err := w.consumeAllAvailableMessages(ctx)
 			if err != nil {
-				log.Printf("Error consuming messages: %v", err)
+				log.Printf("⚠️ Error consuming messages: %v", err)
+				log.Printf("🔄 Will retry in next iteration...")
+				time.Sleep(1 * time.Second) // Brief pause before retry
 				continue
 			}
 
@@ -141,16 +143,94 @@ func (w *IngestionWorker) eventDrivenLoop(ctx context.Context) error {
 
 			// Update state for all consumed messages
 			if err := w.updateStateFromMessages(ctx, messages); err != nil {
-				log.Printf("Error updating state from messages: %v", err)
+				log.Printf("⚠️ Error updating state from messages: %v", err)
+				log.Printf("🔄 Will retry processing in next iteration...")
+				time.Sleep(1 * time.Second)
 				continue
 			}
 
 			// Process all affected blobs after state update
 			if err := w.processAllTrackedBlobsAfterStateUpdate(ctx); err != nil {
-				log.Printf("Error processing blobs after state update: %v", err)
+				log.Printf("⚠️ Error processing blobs after state update: %v", err)
+				log.Printf("🔄 Will continue with next iteration...")
 			}
 		}
 	}
+}
+
+// processAllTrackedBlobsAfterStateUpdate processes all tracked blobs after state updates with enhanced metrics
+func (w *IngestionWorker) processAllTrackedBlobsAfterStateUpdate(ctx context.Context) error {
+	iterationStart := time.Now()
+	processingInterval := w.config.Worker.ProcessingConfig.LoopInterval
+
+	// Apply debouncing logic at the very start of iteration
+	timeSinceLastIteration := iterationStart.Sub(w.lastIterationStart)
+	if !w.lastIterationStart.IsZero() && timeSinceLastIteration < processingInterval {
+		waitTime := processingInterval - timeSinceLastIteration
+		log.Printf("⏳ Debouncing: waiting %.1fs before starting next iteration (last iteration started %.1fs ago)",
+			waitTime.Seconds(), timeSinceLastIteration.Seconds())
+
+		// Wait for the remaining time or until context is cancelled
+		select {
+		case <-ctx.Done():
+			log.Printf("🛑 Context cancelled during debounce wait")
+			return ctx.Err()
+		case <-time.After(waitTime):
+			log.Printf("⏰ Debounce wait completed, proceeding with iteration")
+		}
+	}
+
+	// Update iteration start time now that we're proceeding
+	w.lastIterationStart = iterationStart
+
+	// Process all tracked blobs
+	return w.processAllTrackedBlobsWithProgress(ctx, iterationStart)
+}
+
+// countBlobsNeedingProcessing counts how many tracked blobs need processing
+func (w *IngestionWorker) countBlobsNeedingProcessing() int {
+	count := 0
+	for _, blobState := range w.blobStates {
+		if blobState.State == "open" || blobState.State == "closed" {
+			count++
+		}
+	}
+	return count
+}
+
+// processAllTrackedBlobsWithProgress processes all tracked blobs with progress indicators
+func (w *IngestionWorker) processAllTrackedBlobsWithProgress(ctx context.Context, iterationStart time.Time) error {
+	// Collect all blobs that need processing
+	var blobsToProcess []*BlobState
+	for _, blobState := range w.blobStates {
+		if blobState.State == "open" || blobState.State == "closed" {
+			blobsToProcess = append(blobsToProcess, blobState)
+		}
+	}
+
+	totalBlobs := len(blobsToProcess)
+	log.Printf("📋 Processing %d blob(s) in this iteration", totalBlobs)
+
+	// Process each blob with progress tracking
+	for i, blobState := range blobsToProcess {
+		progress := fmt.Sprintf("[%d/%d]", i+1, totalBlobs)
+
+		// Check for cancellation before each blob
+		select {
+		case <-ctx.Done():
+			log.Printf("🛑 Context cancelled before processing blob %s %s", progress, blobState.BlobName)
+			return ctx.Err()
+		default:
+			if err := w.processBlobWithMetrics(ctx, blobState, progress, iterationStart); err != nil {
+				log.Printf("❌ Error processing blob %s %s: %v", progress, blobState.BlobName, err)
+				// Continue processing other blobs
+			}
+		}
+	}
+
+	iterationDuration := time.Since(iterationStart)
+	log.Printf("✅ Completed iteration in %.1fs - processed %d blob(s)", iterationDuration.Seconds(), totalBlobs)
+	return nil
 }
 
 // consumeAllAvailableMessages drains all currently available messages from the consumer
@@ -206,13 +286,20 @@ func (w *IngestionWorker) consumeAllAvailableMessages(ctx context.Context) ([]*k
 func (w *IngestionWorker) handleNonMessageEvent(event kafka.Event) {
 	switch e := event.(type) {
 	case kafka.Error:
-		log.Printf("❌ Kafka error: %v", e)
+		if e.Code() == kafka.ErrMaxPollExceeded {
+			log.Printf("⚠️ Kafka max poll interval exceeded: %v", e)
+			log.Printf("💡 This is expected when blob processing takes longer than 30 minutes")
+			log.Printf("🔄 Consumer will continue processing after reconnection")
+		} else if e.IsFatal() {
+			log.Printf("💥 Fatal Kafka error: %v", e)
+			log.Printf("🛑 Worker will need to restart")
+		} else {
+			log.Printf("⚠️ Kafka error (non-fatal): %v", e)
+		}
 	case kafka.OffsetsCommitted:
-		log.Printf("📨 Received event: kafka.OffsetsCommitted")
-		log.Printf("🤔 Unknown event type: kafka.OffsetsCommitted")
+		log.Printf("✅ Kafka offsets committed successfully")
 	default:
-		log.Printf("📨 Received event: %T", event)
-		log.Printf("🤔 Unknown event type: %T", event)
+		log.Printf("📨 Received Kafka event: %T", event)
 	}
 }
 
@@ -323,81 +410,6 @@ func (w *IngestionWorker) updateBlobStateFromEvent(event *events.BlobStateEvent)
 	}
 
 	return true
-}
-
-// processAllTrackedBlobsAfterStateUpdate processes all tracked blobs after state updates with enhanced metrics
-func (w *IngestionWorker) processAllTrackedBlobsAfterStateUpdate(ctx context.Context) error {
-	iterationStart := time.Now()
-	processingInterval := w.config.Worker.ProcessingConfig.LoopInterval
-
-	// Apply debouncing logic at the very start of iteration
-	timeSinceLastIteration := iterationStart.Sub(w.lastIterationStart)
-	if !w.lastIterationStart.IsZero() && timeSinceLastIteration < processingInterval {
-		waitTime := processingInterval - timeSinceLastIteration
-		log.Printf("⏳ Debouncing: waiting %.1fs before starting next iteration (last iteration started %.1fs ago)",
-			waitTime.Seconds(), timeSinceLastIteration.Seconds())
-
-		// Wait for the remaining time or until context is cancelled
-		select {
-		case <-ctx.Done():
-			log.Printf("🛑 Context cancelled during debounce wait")
-			return ctx.Err()
-		case <-time.After(waitTime):
-			log.Printf("⏰ Debounce wait completed, proceeding with iteration")
-		}
-	}
-
-	// Update iteration start time now that we're proceeding
-	w.lastIterationStart = iterationStart
-
-	// Process all tracked blobs
-	return w.processAllTrackedBlobsWithProgress(ctx, iterationStart)
-}
-
-// countBlobsNeedingProcessing counts how many tracked blobs need processing
-func (w *IngestionWorker) countBlobsNeedingProcessing() int {
-	count := 0
-	for _, blobState := range w.blobStates {
-		if blobState.State == "open" || blobState.State == "closed" {
-			count++
-		}
-	}
-	return count
-}
-
-// processAllTrackedBlobsWithProgress processes all tracked blobs with progress indicators
-func (w *IngestionWorker) processAllTrackedBlobsWithProgress(ctx context.Context, iterationStart time.Time) error {
-	// Collect all blobs that need processing
-	var blobsToProcess []*BlobState
-	for _, blobState := range w.blobStates {
-		if blobState.State == "open" || blobState.State == "closed" {
-			blobsToProcess = append(blobsToProcess, blobState)
-		}
-	}
-
-	totalBlobs := len(blobsToProcess)
-	log.Printf("📋 Processing %d blob(s) in this iteration", totalBlobs)
-
-	// Process each blob with progress tracking
-	for i, blobState := range blobsToProcess {
-		progress := fmt.Sprintf("[%d/%d]", i+1, totalBlobs)
-
-		// Check for cancellation before each blob
-		select {
-		case <-ctx.Done():
-			log.Printf("🛑 Context cancelled before processing blob %s %s", progress, blobState.BlobName)
-			return ctx.Err()
-		default:
-			if err := w.processBlobWithMetrics(ctx, blobState, progress, iterationStart); err != nil {
-				log.Printf("❌ Error processing blob %s %s: %v", progress, blobState.BlobName, err)
-				// Continue processing other blobs
-			}
-		}
-	}
-
-	iterationDuration := time.Since(iterationStart)
-	log.Printf("✅ Completed iteration in %.1fs - processed %d blob(s)", iterationDuration.Seconds(), totalBlobs)
-	return nil
 }
 
 // processBlobWithMetrics processes a single blob with detailed timing metrics

@@ -93,13 +93,21 @@ type ShardingConfig struct {
 	ShardNumber int `yaml:"shard_number" env:"SHARD_NUMBER" default:"0"`
 }
 
-// ProcessingConfig contains processing options
+// ProcessingConfig contains blob processing configuration
 type ProcessingConfig struct {
-	// Loop interval for worker processing
-	LoopInterval time.Duration `yaml:"loop_interval" env:"LOOP_INTERVAL" default:"30s"`
+	LoopInterval   time.Duration  `yaml:"loop_interval"`    // Time between processing iterations
+	LineBufferSize int            `yaml:"line_buffer_size"` // Buffer size for line scanning
+	ParallelConfig ParallelConfig `yaml:"parallel"`         // Parallel processing configuration
+}
 
-	// Line buffer size for blob processing
-	LineBufferSize int `yaml:"line_buffer_size" env:"LINE_BUFFER_SIZE" default:"1048576"`
+// ParallelConfig contains parallel processing configuration
+type ParallelConfig struct {
+	Enabled        bool   `yaml:"enabled"`         // Enable parallel blob processing
+	MaxConcurrency int    `yaml:"max_concurrency"` // Maximum concurrent blob downloads
+	ChunkSizeHint  int64  `yaml:"chunk_size_hint"` // Suggested chunk size for large blobs (bytes)
+	UseChunking    bool   `yaml:"use_chunking"`    // Enable chunking for large blobs
+	ChunkThreshold int64  `yaml:"chunk_threshold"` // Minimum blob size to consider for chunking
+	Environment    string `yaml:"environment"`     // Environment-specific settings (e.g., "D1", "P1")
 }
 
 // KafkaConfig contains Kafka connection settings

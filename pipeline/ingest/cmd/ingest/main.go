@@ -181,10 +181,13 @@ func runWorkerMode(ctx context.Context, cfg *ingestConfig.Config) error {
 	consumerGroup := fmt.Sprintf("%s-%d", cfg.Worker.ConsumerGroup, time.Now().Unix())
 	log.Printf("🔍 Consumer group: %s", consumerGroup)
 	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers":  cfg.Kafka.Brokers,
-		"group.id":           consumerGroup,
-		"auto.offset.reset":  cfg.Kafka.Consumer.AutoOffsetReset,
-		"enable.auto.commit": cfg.Kafka.Consumer.EnableAutoCommit,
+		"bootstrap.servers":     cfg.Kafka.Brokers,
+		"group.id":              consumerGroup,
+		"auto.offset.reset":     cfg.Kafka.Consumer.AutoOffsetReset,
+		"enable.auto.commit":    cfg.Kafka.Consumer.EnableAutoCommit,
+		"max.poll.interval.ms":  1800000, // 30 minutes - allow longer blob processing
+		"session.timeout.ms":    300000,  // 5 minutes - keep session alive longer
+		"heartbeat.interval.ms": 10000,   // 10 seconds - frequent heartbeats
 	})
 	if err != nil {
 		producer.Close() // Clean up producer if consumer creation fails

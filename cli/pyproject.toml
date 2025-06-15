@@ -15,6 +15,7 @@ dependencies = [
     "click>=8.0.0",
     "rich>=13.0.0",
     "python-dateutil>=2.8.0",
+    "confluent-kafka>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +29,7 @@ dev = [
 [project.scripts]
 list-blobs = "commerce_logs_cli.list_blobs_cli:main"
 setup-config = "commerce_logs_cli.setup_config_cli:main"
+explore-raw-logs = "commerce_logs_cli.explore_raw_logs_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
