@@ -94,4 +94,4 @@ workdir/ pipeline/blob-monitor/blob-monitor
 pipeline/ingest/ingest
 /ingest
 
-Progress.md
+Progress.mdcli/test_venv/
