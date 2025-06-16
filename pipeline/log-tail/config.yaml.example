@@ -1,0 +1,43 @@
+# Example configuration for commerce-logs-pipeline log-tail CLI
+# Copy this to ~/.commerce-logs-pipeline/config.yaml and update with your values
+
+kafka:
+  # Kafka broker addresses
+  brokers: "localhost:9092"
+  
+  # Consumer configuration
+  consumer_config:
+    auto.offset.reset: "latest"
+    enable.auto.commit: "true"
+    session.timeout.ms: "30000"
+    heartbeat.interval.ms: "3000"
+
+subscriptions:
+  cp2:
+    name: "Commerce Cloud Platform 2"
+    environments:
+      P1:
+        name: "Production Environment 1"
+        storage_account:
+          account_name: "your_storage_account"
+          access_key: "your_access_key"
+      D1:
+        name: "Development Environment 1"
+        storage_account:
+          account_name: "your_dev_storage_account"
+          access_key: "your_dev_access_key"
+      S1:
+        name: "Staging Environment 1"
+        storage_account:
+          account_name: "your_staging_storage_account"
+          access_key: "your_staging_access_key"
+  
+  # Add more subscriptions as needed
+  sub2:
+    name: "Another Subscription"
+    environments:
+      P1:
+        name: "Production"
+        storage_account:
+          account_name: "sub2_storage_account"
+          access_key: "sub2_access_key" 

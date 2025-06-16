@@ -23,6 +23,7 @@ Azure Blob Storage → Blob Monitor → Kafka → Ingestion Pipeline → Process
 ├── pipeline/                    # Go modules for pipeline phases
 │   ├── blob-monitor/           # Azure Blob discovery and monitoring
 │   ├── ingest/                 # Azure Blob → Kafka ingestion 
+│   ├── log-tail/               # Real-time log tailing CLI
 │   └── config/                 # Shared configuration library
 ├── cli/                        # Python CLI tools
 │   ├── src/                    # Python modules (config, azure_client)
@@ -44,6 +45,12 @@ Azure Blob Storage → Blob Monitor → Kafka → Ingestion Pipeline → Process
 - Downloads gzipped log segments from Azure Blob Storage
 - Streams lines to Kafka topics with completion tracking
 - Handles resumable processing with byte-level offsets
+
+### ✅ Log Tail CLI (`pipeline/log-tail`)
+- Real-time Kafka log consumption with advanced filtering
+- Filter by subscription, environment, and service selector
+- Multiple output formats (text, JSON) with smart log parsing
+- Support for all pipeline topics (Raw, Extracted, Errors)
 
 ### ✅ Configuration (`pipeline/config`)
 - Shared configuration library for all pipeline phases
@@ -145,6 +152,7 @@ list-blobs --env P1
 
 ### Available Commands
 
+#### Python CLI Tools (in `cli/`)
 | Command | Description |
 |---------|-------------|
 | `setup-config` | Set up secure configuration |
@@ -152,8 +160,14 @@ list-blobs --env P1
 | `list-services` | List available services (planned) |
 | `analyze-logs` | Analyze log content (planned) |
 
+#### Go CLI Tools 
+| Command | Location | Description |
+|---------|----------|-------------|
+| `log-tail` | `pipeline/log-tail/` | Real-time log tailing from Kafka topics |
+
 ### Examples
 
+#### Python CLI Examples
 ```bash
 # List all blobs
 list-blobs
@@ -166,6 +180,28 @@ list-blobs --date 20250601 --service backgroundprocessing
 
 # Limit results
 list-blobs --max-per-env 10
+```
+
+#### Log Tail CLI Examples
+```bash
+# Build and run log-tail CLI
+cd pipeline/log-tail
+make build-local
+
+# Tail all logs
+./log-tail
+
+# Filter by subscription and environment
+./log-tail --subscription cp2 --environment P1
+
+# Filter by service
+./log-tail --service api
+
+# JSON output with raw metadata
+./log-tail --format json --raw
+
+# Specific topics only
+./log-tail --topics "Raw.ApplicationLogs,Extracted.Application"
 ```
 
 ## Development
@@ -195,6 +231,10 @@ go run cmd/blob-monitor/main.go configs/config.yaml
 # Work on ingestion
 cd pipeline/ingest
 go run main.go
+
+# Work on log tailing CLI
+cd pipeline/log-tail
+make run
 
 # Work with configuration
 cd pipeline/config

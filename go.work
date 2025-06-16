@@ -8,6 +8,7 @@ use (
 	./pipeline/events
 	./pipeline/extraction
 	./pipeline/ingest
+	./pipeline/log-tail
 	./pipeline/traces
 	./tools/kafka-init
 	./tools/opensearch-init
